@@ -110,7 +110,9 @@ func TestQueryRangeTimeoutSplitsTimeWindow(t *testing.T) {
 	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/query_range" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
 		}
 		startRaw := r.URL.Query().Get("start")
 		endRaw := r.URL.Query().Get("end")

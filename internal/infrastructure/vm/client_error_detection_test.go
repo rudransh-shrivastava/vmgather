@@ -94,6 +94,13 @@ func TestClassifyResponseError_Empty404KeepsStatusCode(t *testing.T) {
 	}
 }
 
+func TestErrorKindOf_NotFoundAtStartIsMissingRoute(t *testing.T) {
+	err := errors.New("not found: /api/v1/export")
+	if got := ErrorKindOf(err); got != ErrorKindMissingRoute {
+		t.Fatalf("ErrorKindOf(not found prefix) = %q, want %q", got, ErrorKindMissingRoute)
+	}
+}
+
 func TestErrorKindOf_ContextDeadlineExceededIsQueryTimeout(t *testing.T) {
 	if got := ErrorKindOf(context.DeadlineExceeded); got != ErrorKindQueryTimeout {
 		t.Fatalf("ErrorKindOf(context deadline) = %q, want %q", got, ErrorKindQueryTimeout)

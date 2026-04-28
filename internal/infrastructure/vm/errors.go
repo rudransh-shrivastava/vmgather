@@ -69,7 +69,7 @@ func ErrorKindOf(err error) ErrorKind {
 	case strings.Contains(msg, "missing route"),
 		strings.Contains(msg, "unsupported path"),
 		strings.Contains(msg, "unexpected status code 404"),
-		strings.Contains(msg, " not found"):
+		strings.Contains(msg, "not found"):
 		return ErrorKindMissingRoute
 	}
 
