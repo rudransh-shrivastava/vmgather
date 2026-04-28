@@ -56,29 +56,46 @@ func validateExportID(exportID string) error {
 // Note: InstanceMap and JobMap are intentionally excluded from archive metadata
 // per issue #10 - mapping should not be included in the archive sent to customers
 type ArchiveMetadata struct {
-	ExportID        string            `json:"export_id"`
-	ExportDate      time.Time         `json:"export_date"`
-	TimeRange       domain.TimeRange  `json:"time_range"`
-	Components      []string          `json:"components"`
-	Jobs            []string          `json:"jobs"`
-	MetricsCount    int               `json:"metrics_count"`
-	Obfuscated      bool              `json:"obfuscated"`
-	InstanceMap     map[string]string `json:"instance_map,omitempty"` // Internal use only, not included in archive
-	JobMap          map[string]string `json:"job_map,omitempty"`      // Internal use only, not included in archive
-	VMGatherVersion string            `json:"vmgather_version"`
+	ExportID             string             `json:"export_id"`
+	ExportDate           time.Time          `json:"export_date"`
+	TimeRange            domain.TimeRange   `json:"time_range"`
+	Components           []string           `json:"components"`
+	Jobs                 []string           `json:"jobs"`
+	MetricsCount         int                `json:"metrics_count"`
+	Obfuscated           bool               `json:"obfuscated"`
+	InstanceMap          map[string]string  `json:"instance_map,omitempty"` // Internal use only, not included in archive
+	JobMap               map[string]string  `json:"job_map,omitempty"`      // Internal use only, not included in archive
+	AdaptiveMode         string             `json:"adaptive_mode,omitempty"`
+	MetricStepSeconds    int                `json:"metric_step_seconds,omitempty"`
+	MaxMetricStepSeconds int                `json:"max_metric_step_seconds,omitempty"`
+	Sampled              bool               `json:"sampled,omitempty"`
+	AdaptiveDecisions    []AdaptiveDecision `json:"adaptive_decisions,omitempty"`
+	VMGatherVersion      string             `json:"vmgather_version"`
 }
 
 // archiveMetadataPublic is the public version of metadata without obfuscation maps
 // This is what gets included in the archive sent to customers
 type archiveMetadataPublic struct {
-	ExportID        string           `json:"export_id"`
-	ExportDate      time.Time        `json:"export_date"`
-	TimeRange       domain.TimeRange `json:"time_range"`
-	Components      []string         `json:"components"`
-	Jobs            []string         `json:"jobs"`
-	MetricsCount    int              `json:"metrics_count"`
-	Obfuscated      bool             `json:"obfuscated"`
-	VMGatherVersion string           `json:"vmgather_version"`
+	ExportID             string             `json:"export_id"`
+	ExportDate           time.Time          `json:"export_date"`
+	TimeRange            domain.TimeRange   `json:"time_range"`
+	Components           []string           `json:"components"`
+	Jobs                 []string           `json:"jobs"`
+	MetricsCount         int                `json:"metrics_count"`
+	Obfuscated           bool               `json:"obfuscated"`
+	AdaptiveMode         string             `json:"adaptive_mode,omitempty"`
+	MetricStepSeconds    int                `json:"metric_step_seconds,omitempty"`
+	MaxMetricStepSeconds int                `json:"max_metric_step_seconds,omitempty"`
+	Sampled              bool               `json:"sampled,omitempty"`
+	AdaptiveDecisions    []AdaptiveDecision `json:"adaptive_decisions,omitempty"`
+	VMGatherVersion      string             `json:"vmgather_version"`
+}
+
+type AdaptiveDecision struct {
+	Strategy    string           `json:"strategy"`
+	ErrorKind   string           `json:"error_kind,omitempty"`
+	TimeRange   domain.TimeRange `json:"time_range"`
+	StepSeconds int              `json:"step_seconds,omitempty"`
 }
 
 // CreateArchive creates a ZIP archive with metrics data
@@ -163,14 +180,19 @@ func (w *Writer) addMetadataToArchive(zipWriter *zip.Writer, metadata ArchiveMet
 
 	// Create public metadata without obfuscation maps
 	publicMetadata := archiveMetadataPublic{
-		ExportID:        metadata.ExportID,
-		ExportDate:      metadata.ExportDate,
-		TimeRange:       metadata.TimeRange,
-		Components:      metadata.Components,
-		Jobs:            metadata.Jobs,
-		MetricsCount:    metadata.MetricsCount,
-		Obfuscated:      metadata.Obfuscated,
-		VMGatherVersion: metadata.VMGatherVersion,
+		ExportID:             metadata.ExportID,
+		ExportDate:           metadata.ExportDate,
+		TimeRange:            metadata.TimeRange,
+		Components:           metadata.Components,
+		Jobs:                 metadata.Jobs,
+		MetricsCount:         metadata.MetricsCount,
+		Obfuscated:           metadata.Obfuscated,
+		AdaptiveMode:         metadata.AdaptiveMode,
+		MetricStepSeconds:    metadata.MetricStepSeconds,
+		MaxMetricStepSeconds: metadata.MaxMetricStepSeconds,
+		Sampled:              metadata.Sampled,
+		AdaptiveDecisions:    metadata.AdaptiveDecisions,
+		VMGatherVersion:      metadata.VMGatherVersion,
 	}
 
 	encoder := json.NewEncoder(writer)

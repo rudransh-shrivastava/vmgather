@@ -34,6 +34,15 @@ const (
 	QueryModeMetricsQL QueryMode = "metricsql"
 )
 
+// ExportAdaptivityMode controls how aggressively vmgather changes export plans after VM rejects heavy reads.
+type ExportAdaptivityMode string
+
+const (
+	ExportAdaptivityOff       ExportAdaptivityMode = "off"
+	ExportAdaptivitySafe      ExportAdaptivityMode = "safe"
+	ExportAdaptivityAutopilot ExportAdaptivityMode = "autopilot"
+)
+
 // AuthConfig contains authentication settings
 type AuthConfig struct {
 	Type        AuthType `json:"type"`
@@ -81,11 +90,14 @@ type BatchSettings struct {
 
 // ExportSafetyConfig controls adaptive retries when VictoriaMetrics rejects heavy reads.
 type ExportSafetyConfig struct {
-	AutoSplit         bool `json:"auto_split"`
-	SplitByJob        bool `json:"split_by_job"`
-	SplitByMetricName bool `json:"split_by_metric_name,omitempty"`
-	MinWindowSeconds  int  `json:"min_window_seconds,omitempty"`
-	MaxSplitDepth     int  `json:"max_split_depth,omitempty"`
+	Mode              ExportAdaptivityMode `json:"mode,omitempty"`
+	AutoSplit         bool                 `json:"auto_split"`
+	SplitByJob        bool                 `json:"split_by_job"`
+	SplitByMetricName bool                 `json:"split_by_metric_name,omitempty"`
+	MinWindowSeconds  int                  `json:"min_window_seconds,omitempty"`
+	MaxSplitDepth     int                  `json:"max_split_depth,omitempty"`
+	MaxStepSeconds    int                  `json:"max_step_seconds,omitempty"`
+	StepLadderSeconds []int                `json:"step_ladder_seconds,omitempty"`
 }
 
 // MetricSample represents a sample metric for preview

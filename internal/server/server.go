@@ -877,6 +877,7 @@ func (s *Server) handleExportStatus(w http.ResponseWriter, r *http.Request) {
 		"average_batch_seconds":       status.AverageBatchSeconds,
 		"last_batch_duration_seconds": status.LastBatchDurationSeconds,
 		"adaptive_retries":            status.AdaptiveRetries,
+		"current_step_seconds":        status.CurrentStepSeconds,
 	}
 	if status.StagingPath != "" {
 		response["staging_path"] = status.StagingPath

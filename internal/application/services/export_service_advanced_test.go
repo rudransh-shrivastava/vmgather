@@ -424,6 +424,7 @@ func TestExportService_BuildArchiveMetadata_EdgeCases(t *testing.T) {
 				tt.config,
 				tt.metricsCount,
 				tt.obfuscationMaps,
+				nil,
 			)
 
 			// Should not panic

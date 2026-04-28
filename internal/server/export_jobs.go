@@ -45,6 +45,7 @@ type ExportJobStatus struct {
 	AdaptiveRetries          int                  `json:"adaptive_retries"`
 	LastErrorKind            string               `json:"last_error_kind,omitempty"`
 	CurrentStrategy          string               `json:"current_strategy,omitempty"`
+	CurrentStepSeconds       int                  `json:"current_step_seconds,omitempty"`
 	Result                   *domain.ExportResult `json:"result,omitempty"`
 	Error                    string               `json:"error,omitempty"`
 	CurrentRange             *domain.TimeRange    `json:"current_range,omitempty"`
@@ -177,6 +178,7 @@ func (m *ExportJobManager) ResumeJob(ctx context.Context, jobID string) (*Export
 	job.status.AdaptiveRetries = 0
 	job.status.LastErrorKind = ""
 	job.status.CurrentStrategy = ""
+	job.status.CurrentStepSeconds = 0
 
 	m.activeJobs++
 
@@ -325,6 +327,7 @@ func (m *ExportJobManager) updateAdaptiveRetry(jobID string, progress services.A
 	job.status.AdaptiveRetries = progress.Retries
 	job.status.LastErrorKind = progress.ErrorKind
 	job.status.CurrentStrategy = progress.Strategy
+	job.status.CurrentStepSeconds = progress.StepSeconds
 	job.status.CurrentRange = &domain.TimeRange{
 		Start: progress.TimeRange.Start,
 		End:   progress.TimeRange.End,

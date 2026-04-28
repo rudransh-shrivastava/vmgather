@@ -17,6 +17,16 @@ import (
 	"github.com/VictoriaMetrics/vmgather/internal/infrastructure/vm"
 )
 
+type exportMetadataForTest struct {
+	MetricStepSeconds int    `json:"metric_step_seconds"`
+	Sampled           bool   `json:"sampled"`
+	AdaptiveMode      string `json:"adaptive_mode"`
+	AdaptiveDecisions []struct {
+		Strategy    string `json:"strategy"`
+		StepSeconds int    `json:"step_seconds"`
+	} `json:"adaptive_decisions"`
+}
+
 func TestExportViaQueryRange_Chunking(t *testing.T) {
 	// We want to verify that a large time range is split into 1-hour chunks
 	startTime := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -201,6 +211,127 @@ func TestQueryRangeTimeoutStopsAtMinWindow(t *testing.T) {
 	}
 }
 
+func TestAutopilotIncreasesMetricStepAfterMinWindow(t *testing.T) {
+	var steps []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		step := r.URL.Query().Get("step")
+		steps = append(steps, step)
+		if step == "30s" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"status":"error","error":"timeout exceeded during query execution: 30.000 seconds"}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "matrix",
+				"result": []any{
+					map[string]any{
+						"metric": map[string]string{
+							"__name__": "vm_rows_inserted_total",
+							"job":      "vmagent",
+						},
+						"values": [][]any{{float64(0), "1"}},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	service := NewExportService(t.TempDir(), "test")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: srv.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(10, 0),
+		},
+		Mode:      domain.ExportModeCustom,
+		QueryType: domain.QueryModeMetricsQL,
+		Query:     `rate(vm_rows_inserted_total[5m])`,
+		Batching:  domain.BatchSettings{Enabled: false, Strategy: "manual"},
+		Safety: domain.ExportSafetyConfig{
+			Mode:              domain.ExportAdaptivityAutopilot,
+			AutoSplit:         true,
+			SplitByJob:        true,
+			MinWindowSeconds:  10,
+			MaxSplitDepth:     8,
+			MaxStepSeconds:    300,
+			StepLadderSeconds: []int{30, 60, 300},
+		},
+	}
+	ApplyExportDefaults(&cfg)
+
+	result, err := service.ExecuteExport(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ExecuteExport failed: %v", err)
+	}
+	if result.MetricsExported != 1 {
+		t.Fatalf("expected one exported metric, got %d", result.MetricsExported)
+	}
+	if strings.Join(steps, ",") != "30s,60s" {
+		t.Fatalf("expected autopilot to retry with 60s step, got %v", steps)
+	}
+	metadata := readExportMetadataForTest(t, result.ArchivePath)
+	if !metadata.Sampled || metadata.MetricStepSeconds != 60 {
+		t.Fatalf("expected sampled metadata at 60s, got %+v", metadata)
+	}
+	if len(metadata.AdaptiveDecisions) == 0 || metadata.AdaptiveDecisions[len(metadata.AdaptiveDecisions)-1].Strategy != "increase_step" {
+		t.Fatalf("expected increase_step decision in metadata, got %+v", metadata.AdaptiveDecisions)
+	}
+}
+
+func TestAutopilotStopsAtFiveMinuteMetricStep(t *testing.T) {
+	var steps []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		steps = append(steps, r.URL.Query().Get("step"))
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, `{"status":"error","error":"timeout exceeded during query execution: 30.000 seconds"}`)
+	}))
+	defer srv.Close()
+
+	service := NewExportService(t.TempDir(), "test")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: srv.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(10, 0),
+		},
+		Mode:      domain.ExportModeCustom,
+		QueryType: domain.QueryModeMetricsQL,
+		Query:     `rate(vm_rows_inserted_total[5m])`,
+		Batching:  domain.BatchSettings{Enabled: false, Strategy: "manual"},
+		Safety: domain.ExportSafetyConfig{
+			Mode:              domain.ExportAdaptivityAutopilot,
+			AutoSplit:         true,
+			SplitByJob:        true,
+			MinWindowSeconds:  10,
+			MaxSplitDepth:     8,
+			MaxStepSeconds:    300,
+			StepLadderSeconds: []int{30, 60, 120, 300, 600},
+		},
+	}
+	ApplyExportDefaults(&cfg)
+
+	_, err := service.ExecuteExport(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected timeout failure at max autopilot step")
+	}
+	if !strings.Contains(err.Error(), "sampling at 300s") {
+		t.Fatalf("expected max-step timeout error, got %v", err)
+	}
+	got := strings.Join(steps, ",")
+	if got != "30s,60s,120s,300s" {
+		t.Fatalf("expected retries to stop at 300s, got %v", steps)
+	}
+}
+
 func TestAdaptiveRetryDoesNotAppendFailedPartialAttempt(t *testing.T) {
 	start := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
 	var largeAttemptFailed bool
@@ -300,4 +431,31 @@ func TestAdaptiveRetryDoesNotAppendFailedPartialAttempt(t *testing.T) {
 	if lines != 3 {
 		t.Fatalf("expected only successful split output in archive, got %d lines", lines)
 	}
+}
+
+func readExportMetadataForTest(t *testing.T, archivePath string) exportMetadataForTest {
+	t.Helper()
+	archiveReader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatalf("failed to open archive: %v", err)
+	}
+	defer func() { _ = archiveReader.Close() }()
+	for _, file := range archiveReader.File {
+		if file.Name != "metadata.json" {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatalf("failed to open metadata.json: %v", err)
+		}
+		var metadata exportMetadataForTest
+		err = json.NewDecoder(rc).Decode(&metadata)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatalf("failed to decode metadata.json: %v", err)
+		}
+		return metadata
+	}
+	t.Fatal("metadata.json not found")
+	return exportMetadataForTest{}
 }

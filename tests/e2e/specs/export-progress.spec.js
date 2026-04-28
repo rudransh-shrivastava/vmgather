@@ -172,8 +172,10 @@ test.describe('Export progress UI', () => {
       expect(requestBody.staging_dir).toBe(STAGING_DIR);
       expect(requestBody.metric_step_seconds).toBe(60);
       expect(requestBody.safety).toMatchObject({
+        mode: 'autopilot',
         auto_split: true,
         split_by_job: true,
+        max_step_seconds: 300,
       });
       expect(requestBody.batching).toMatchObject({
         strategy: 'custom',
@@ -289,6 +291,7 @@ test.describe('Export progress UI', () => {
           staging_path: STAGING_DIR,
           adaptive_retries: 1,
           current_strategy: 'split_by_job',
+          current_step_seconds: 30,
           last_error_kind: 'too_many_series',
           result: {
             export_id: 'job-adaptive-test',
@@ -313,6 +316,7 @@ test.describe('Export progress UI', () => {
           staging_path: STAGING_DIR,
           adaptive_retries: 1,
           current_strategy: 'split_by_job',
+          current_step_seconds: 30,
           last_error_kind: 'too_many_series',
         };
       route.fulfill({
@@ -333,6 +337,55 @@ test.describe('Export progress UI', () => {
 
     await expect(page.locator('#exportAdaptiveStrategy')).toContainText('Adaptive retry: split by job');
     await page.waitForSelector('.step[data-step="7"]');
+  });
+
+  test('shows autopilot sampling step changes during export', async ({ page }) => {
+    await page.route('**/api/export/start', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          job_id: 'job-autopilot-step-test',
+          total_batches: 1,
+          batch_window_seconds: 60,
+          staging_path: STAGING_DIR,
+        }),
+      });
+    });
+
+    await page.route('**/api/export/status**', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          job_id: 'job-autopilot-step-test',
+          state: 'running',
+          total_batches: 1,
+          completed_batches: 0,
+          progress: 0.2,
+          metrics_processed: 0,
+          batch_window_seconds: 60,
+          average_batch_seconds: 0,
+          last_batch_duration_seconds: 0,
+          staging_path: STAGING_DIR,
+          adaptive_retries: 2,
+          current_strategy: 'increase_step',
+          current_step_seconds: 300,
+          last_error_kind: 'query_timeout',
+        }),
+      });
+    });
+
+    await goToObfuscationStep(page);
+    await page.waitForSelector('.step[data-step="6"].active #startExportBtn:enabled');
+    await page.evaluate(() => {
+      const btn = document.getElementById('startExportBtn');
+      if (btn && window.exportMetrics) {
+        window.exportMetrics(btn);
+      }
+    });
+
+    await expect(page.locator('#exportAdaptiveStrategy')).toContainText('Adaptive retry: lower sampling precision (5 min)');
   });
 });
 

@@ -413,7 +413,7 @@ func TestExportService_BuildArchiveMetadata(t *testing.T) {
 		},
 	}
 
-	metadata := service.buildArchiveMetadata("test-export", config, 1500, obfuscationMaps)
+	metadata := service.buildArchiveMetadata("test-export", config, 1500, obfuscationMaps, nil)
 
 	// Verify fields
 	if metadata.ExportID != "test-export" {

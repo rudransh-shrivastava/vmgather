@@ -1478,6 +1478,14 @@
                                 time range.</span>
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="adaptiveExportMode" checked
+                                style="width: auto; margin-right: 10px;">
+                            Adaptive export autopilot
+                        </label>
+                        <span class="input-hint">Starts with full precision and only lowers query_range sampling up to 5 minutes when VictoriaMetrics rejects the request.</span>
+                    </div>
 
                     <div id="exportProgressPanel" class="export-progress hidden">
                         <div class="export-progress-header">

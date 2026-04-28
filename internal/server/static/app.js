@@ -1922,6 +1922,16 @@ function getBatchingConfig() {
     };
 }
 
+function getSafetyConfig() {
+    const adaptive = document.getElementById('adaptiveExportMode')?.checked !== false;
+    return {
+        mode: adaptive ? 'autopilot' : 'safe',
+        auto_split: true,
+        split_by_job: true,
+        max_step_seconds: 300
+    };
+}
+
 function formatStepLabel(seconds) {
     if (!seconds || seconds < 60) {
         return `${seconds}s`;
@@ -3091,10 +3101,7 @@ async function exportMetrics(buttonElement) {
             staging_dir: stagingDirValue,
             metric_step_seconds: metricStepSeconds,
             batching: batchingConfig,
-            safety: {
-                auto_split: true,
-                split_by_job: true
-            }
+            safety: getSafetyConfig()
         };
         window.__lastExportStartPayload = exportPayload;
 
@@ -3349,12 +3356,15 @@ function updateExportProgress(status) {
         const strategyLabels = {
             split_by_job: 'Adaptive retry: split by job',
             split_by_time: 'Adaptive retry: split time window',
+            increase_step: 'Adaptive retry: lower sampling precision',
             query_range: 'Adaptive retry: switch to query_range',
             export: 'Adaptive retry: retry export plan'
         };
         if (status.current_strategy && status.adaptive_retries > 0) {
             const label = strategyLabels[status.current_strategy] || `Adaptive retry: ${status.current_strategy}`;
-            adaptiveEl.textContent = label;
+            adaptiveEl.textContent = status.current_step_seconds
+                ? `${label} (${formatStepLabel(status.current_step_seconds)})`
+                : label;
         } else {
             adaptiveEl.textContent = '';
         }

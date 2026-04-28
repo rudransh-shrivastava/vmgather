@@ -22,10 +22,11 @@ type BatchProgress struct {
 
 // AdaptiveRetryProgress describes an adaptive retry or split decision for the current batch.
 type AdaptiveRetryProgress struct {
-	Retries   int
-	TimeRange domain.TimeRange
-	ErrorKind string
-	Strategy  string
+	Retries     int
+	TimeRange   domain.TimeRange
+	ErrorKind   string
+	Strategy    string
+	StepSeconds int
 }
 
 // ProgressReporter receives progress events for long-running exports.

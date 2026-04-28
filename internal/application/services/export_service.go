@@ -36,6 +36,14 @@ type exportAttempt struct {
 	Depth         int
 	Jobs          []string
 	Strategy      string
+	StepSeconds   int
+}
+
+type adaptiveExportStats struct {
+	Mode               domain.ExportAdaptivityMode
+	MaxStepSecondsUsed int
+	Sampled            bool
+	Decisions          []archive.AdaptiveDecision
 }
 
 // ExportService interface for full export operations
@@ -76,6 +84,8 @@ func ExportToWriter(ctx context.Context, config domain.ExportConfig, writer io.W
 
 // ExecuteExport performs full metrics export with optional obfuscation
 func (s *exportServiceImpl) ExecuteExport(ctx context.Context, config domain.ExportConfig) (*domain.ExportResult, error) {
+	applyExportServiceDefaults(&config)
+
 	// Generate export ID
 	exportID := s.generateExportID()
 
@@ -102,6 +112,10 @@ func (s *exportServiceImpl) ExecuteExport(ctx context.Context, config domain.Exp
 	if config.Obfuscation.Enabled {
 		obfuscator = obfuscation.NewObfuscator()
 	}
+	adaptiveStats := &adaptiveExportStats{
+		Mode:               config.Safety.Mode,
+		MaxStepSecondsUsed: config.MetricStepSeconds,
+	}
 
 	startIdx := config.ResumeFromBatch
 	if startIdx < 0 || startIdx >= len(batchWindows) {
@@ -122,7 +136,7 @@ func (s *exportServiceImpl) ExecuteExport(ctx context.Context, config domain.Exp
 
 		attempt := s.newExportAttempt(config, window)
 		retryCount := 0
-		batchCount, err := s.exportWindowAdaptive(ctx, client, config, attempt, config.StagingFile, obfuscator, &retryCount)
+		batchCount, err := s.exportWindowAdaptive(ctx, client, config, attempt, config.StagingFile, obfuscator, &retryCount, adaptiveStats)
 		if err != nil {
 			fmt.Printf("[ERROR] Metrics processing failed for batch %d: %v\n", batchIndex+1, err)
 			return nil, fmt.Errorf("metrics processing failed: %w", err)
@@ -150,7 +164,7 @@ func (s *exportServiceImpl) ExecuteExport(ctx context.Context, config domain.Exp
 
 	// Step 3: Create archive
 	fmt.Printf("Creating archive...\n")
-	metadata := s.buildArchiveMetadata(exportID, config, metricsCount, obfuscationMaps)
+	metadata := s.buildArchiveMetadata(exportID, config, metricsCount, obfuscationMaps, adaptiveStats)
 	processedReader, err := os.Open(config.StagingFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open staging file for archive: %w", err)
@@ -212,6 +226,8 @@ func initializeStagingFile(path string, preserve bool) error {
 }
 
 func (s *exportServiceImpl) exportToWriter(ctx context.Context, config domain.ExportConfig, writer io.Writer) (int, error) {
+	applyExportServiceDefaults(&config)
+
 	client := s.clientFactory(config.Connection)
 	selector, useQueryRange := s.buildExportQuery(config)
 	batchWindows := CalculateBatchWindows(config.TimeRange, config.Batching)
@@ -247,6 +263,14 @@ func (s *exportServiceImpl) exportToWriter(ctx context.Context, config domain.Ex
 	return metricsCount, nil
 }
 
+func applyExportServiceDefaults(config *domain.ExportConfig) {
+	originalBatching := config.Batching
+	ApplyExportDefaults(config)
+	if !originalBatching.Enabled && originalBatching.Strategy == "" && originalBatching.CustomIntervalSecs == 0 {
+		config.Batching = originalBatching
+	}
+}
+
 func (s *exportServiceImpl) newExportAttempt(config domain.ExportConfig, tr domain.TimeRange) exportAttempt {
 	selector, useQueryRange := s.buildExportQuery(config)
 	strategy := "export"
@@ -259,6 +283,7 @@ func (s *exportServiceImpl) newExportAttempt(config domain.ExportConfig, tr doma
 		UseQueryRange: useQueryRange,
 		Jobs:          uniqueStrings(config.Jobs),
 		Strategy:      strategy,
+		StepSeconds:   config.MetricStepSeconds,
 	}
 }
 
@@ -270,9 +295,10 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 	mainStagingFile string,
 	obfuscator *obfuscation.Obfuscator,
 	retryCount *int,
+	stats *adaptiveExportStats,
 ) (int, error) {
 	attemptFile := fmt.Sprintf("%s.attempt.%d", mainStagingFile, time.Now().UnixNano())
-	count, err := s.fetchAndProcessAttempt(ctx, client, config, attempt, obfuscator, attemptFile)
+	count, err := s.fetchAndProcessAttempt(ctx, client, config, attempt, obfuscator, attemptFile, stats)
 	if err == nil {
 		if err := appendFile(mainStagingFile, attemptFile); err != nil {
 			_ = os.Remove(attemptFile)
@@ -284,32 +310,33 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 	_ = os.Remove(attemptFile)
 
 	kind := vm.ErrorKindOf(err)
-	if !config.Safety.AutoSplit || attempt.Depth >= config.Safety.MaxSplitDepth {
-		return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
-	}
 
 	switch {
-	case kind == vm.ErrorKindMissingRoute && !attempt.UseQueryRange:
+	case kind == vm.ErrorKindMissingRoute && !attempt.UseQueryRange && config.Safety.AutoSplit && attempt.Depth < config.Safety.MaxSplitDepth:
 		*retryCount++
-		ReportAdaptiveRetry(ctx, AdaptiveRetryProgress{
+		progress := AdaptiveRetryProgress{
 			Retries:   *retryCount,
 			TimeRange: attempt.TimeRange,
 			ErrorKind: string(kind),
 			Strategy:  "query_range",
-		})
+		}
+		ReportAdaptiveRetry(ctx, progress)
+		recordAdaptiveDecision(stats, progress)
 		next := attempt
 		next.UseQueryRange = true
 		next.Depth++
 		next.Strategy = "query_range"
-		return s.exportWindowAdaptive(ctx, client, config, next, mainStagingFile, obfuscator, retryCount)
-	case kind == vm.ErrorKindTooManySeries && config.Safety.SplitByJob && len(attempt.Jobs) > 1:
+		return s.exportWindowAdaptive(ctx, client, config, next, mainStagingFile, obfuscator, retryCount, stats)
+	case kind == vm.ErrorKindTooManySeries && config.Safety.AutoSplit && attempt.Depth < config.Safety.MaxSplitDepth && config.Safety.SplitByJob && len(attempt.Jobs) > 1:
 		*retryCount++
-		ReportAdaptiveRetry(ctx, AdaptiveRetryProgress{
+		progress := AdaptiveRetryProgress{
 			Retries:   *retryCount,
 			TimeRange: attempt.TimeRange,
 			ErrorKind: string(kind),
 			Strategy:  "split_by_job",
-		})
+		}
+		ReportAdaptiveRetry(ctx, progress)
+		recordAdaptiveDecision(stats, progress)
 		total := 0
 		for _, job := range attempt.Jobs {
 			child, ok := s.buildJobSplitAttempt(config, attempt, job)
@@ -317,7 +344,7 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 				return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
 			}
 			child.Depth = attempt.Depth + 1
-			count, childErr := s.exportWindowAdaptive(ctx, client, config, child, mainStagingFile, obfuscator, retryCount)
+			count, childErr := s.exportWindowAdaptive(ctx, client, config, child, mainStagingFile, obfuscator, retryCount, stats)
 			if childErr != nil {
 				return 0, childErr
 			}
@@ -325,38 +352,60 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 		}
 		return total, nil
 	case kind == vm.ErrorKindQueryTimeout && attempt.UseQueryRange:
-		left, right, ok := splitTimeRange(attempt.TimeRange, config.Safety.MinWindowSeconds)
-		if !ok {
-			return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
-		}
-		*retryCount++
-		ReportAdaptiveRetry(ctx, AdaptiveRetryProgress{
-			Retries:   *retryCount,
-			TimeRange: attempt.TimeRange,
-			ErrorKind: string(kind),
-			Strategy:  "split_by_time",
-		})
-		leftAttempt := attempt
-		leftAttempt.TimeRange = left
-		leftAttempt.Depth = attempt.Depth + 1
-		leftAttempt.Strategy = "query_range"
-		rightAttempt := attempt
-		rightAttempt.TimeRange = right
-		rightAttempt.Depth = attempt.Depth + 1
-		rightAttempt.Strategy = "query_range"
+		if config.Safety.AutoSplit && attempt.Depth < config.Safety.MaxSplitDepth {
+			left, right, ok := splitTimeRange(attempt.TimeRange, config.Safety.MinWindowSeconds)
+			if ok {
+				*retryCount++
+				progress := AdaptiveRetryProgress{
+					Retries:     *retryCount,
+					TimeRange:   attempt.TimeRange,
+					ErrorKind:   string(kind),
+					Strategy:    "split_by_time",
+					StepSeconds: attempt.StepSeconds,
+				}
+				ReportAdaptiveRetry(ctx, progress)
+				recordAdaptiveDecision(stats, progress)
+				leftAttempt := attempt
+				leftAttempt.TimeRange = left
+				leftAttempt.Depth = attempt.Depth + 1
+				leftAttempt.Strategy = "query_range"
+				rightAttempt := attempt
+				rightAttempt.TimeRange = right
+				rightAttempt.Depth = attempt.Depth + 1
+				rightAttempt.Strategy = "query_range"
 
-		leftCount, leftErr := s.exportWindowAdaptive(ctx, client, config, leftAttempt, mainStagingFile, obfuscator, retryCount)
-		if leftErr != nil {
-			return 0, leftErr
+				leftCount, leftErr := s.exportWindowAdaptive(ctx, client, config, leftAttempt, mainStagingFile, obfuscator, retryCount, stats)
+				if leftErr != nil {
+					return 0, leftErr
+				}
+				rightCount, rightErr := s.exportWindowAdaptive(ctx, client, config, rightAttempt, mainStagingFile, obfuscator, retryCount, stats)
+				if rightErr != nil {
+					return 0, rightErr
+				}
+				return leftCount + rightCount, nil
+			}
 		}
-		rightCount, rightErr := s.exportWindowAdaptive(ctx, client, config, rightAttempt, mainStagingFile, obfuscator, retryCount)
-		if rightErr != nil {
-			return 0, rightErr
+		if nextStep, ok := nextAutopilotStep(attempt.StepSeconds, config.Safety); ok {
+			*retryCount++
+			progress := AdaptiveRetryProgress{
+				Retries:     *retryCount,
+				TimeRange:   attempt.TimeRange,
+				ErrorKind:   string(kind),
+				Strategy:    "increase_step",
+				StepSeconds: nextStep,
+			}
+			ReportAdaptiveRetry(ctx, progress)
+			recordAdaptiveDecision(stats, progress)
+			next := attempt
+			next.StepSeconds = nextStep
+			next.Depth = 0
+			next.Strategy = "query_range"
+			return s.exportWindowAdaptive(ctx, client, config, next, mainStagingFile, obfuscator, retryCount, stats)
 		}
-		return leftCount + rightCount, nil
 	default:
-		return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
 	}
+
+	return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
 }
 
 func (s *exportServiceImpl) fetchAndProcessAttempt(
@@ -366,6 +415,7 @@ func (s *exportServiceImpl) fetchAndProcessAttempt(
 	attempt exportAttempt,
 	obfuscator *obfuscation.Obfuscator,
 	attemptFile string,
+	stats *adaptiveExportStats,
 ) (int, error) {
 	handle, err := os.OpenFile(attemptFile, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {
@@ -374,12 +424,11 @@ func (s *exportServiceImpl) fetchAndProcessAttempt(
 	defer func() { _ = handle.Close() }()
 
 	writer := bufio.NewWriter(handle)
-	defer func() { _ = writer.Flush() }()
 
 	batchCtx, cancelBatch := context.WithTimeout(ctx, defaultBatchTimeout)
 	defer cancelBatch()
 
-	exportReader, err := s.fetchBatch(batchCtx, client, attempt.Selector, attempt.TimeRange, config.MetricStepSeconds, attempt.UseQueryRange)
+	exportReader, err := s.fetchAttemptReader(batchCtx, client, attempt)
 	if err != nil {
 		return 0, err
 	}
@@ -393,6 +442,10 @@ func (s *exportServiceImpl) fetchAndProcessAttempt(
 	if err := writer.Flush(); err != nil {
 		return 0, fmt.Errorf("failed to flush attempt file: %w", err)
 	}
+	if err := handle.Close(); err != nil {
+		return 0, fmt.Errorf("failed to close attempt file: %w", err)
+	}
+	recordAttemptSuccess(stats, attempt)
 	return count, nil
 }
 
@@ -609,8 +662,9 @@ func (s *exportServiceImpl) buildExportQuery(config domain.ExportConfig) (string
 
 func (s *exportServiceImpl) buildJobSplitAttempt(config domain.ExportConfig, parent exportAttempt, job string) (exportAttempt, bool) {
 	child := exportAttempt{
-		TimeRange: parent.TimeRange,
-		Jobs:      []string{job},
+		TimeRange:   parent.TimeRange,
+		Jobs:        []string{job},
+		StepSeconds: parent.StepSeconds,
 	}
 
 	switch {
@@ -678,22 +732,78 @@ func containsJobMatcher(selectorBody string) bool {
 	return jobMatcherPattern.MatchString(selectorBody)
 }
 
+func nextAutopilotStep(current int, safety domain.ExportSafetyConfig) (int, bool) {
+	if safety.Mode != domain.ExportAdaptivityAutopilot {
+		return 0, false
+	}
+	for _, step := range normalizeStepLadder(safety.StepLadderSeconds, safety.MaxStepSeconds) {
+		if step > current {
+			return step, true
+		}
+	}
+	return 0, false
+}
+
+func recordAdaptiveDecision(stats *adaptiveExportStats, progress AdaptiveRetryProgress) {
+	if stats == nil {
+		return
+	}
+	stats.Decisions = append(stats.Decisions, archive.AdaptiveDecision{
+		Strategy:    progress.Strategy,
+		ErrorKind:   progress.ErrorKind,
+		TimeRange:   progress.TimeRange,
+		StepSeconds: progress.StepSeconds,
+	})
+	if progress.StepSeconds > stats.MaxStepSecondsUsed {
+		stats.MaxStepSecondsUsed = progress.StepSeconds
+	}
+	if progress.Strategy == "increase_step" {
+		stats.Sampled = true
+	}
+}
+
+func recordAttemptSuccess(stats *adaptiveExportStats, attempt exportAttempt) {
+	if stats == nil {
+		return
+	}
+	if attempt.UseQueryRange {
+		stats.Sampled = true
+	}
+	if attempt.StepSeconds > stats.MaxStepSecondsUsed {
+		stats.MaxStepSecondsUsed = attempt.StepSeconds
+	}
+}
+
 // buildArchiveMetadata builds archive metadata from export config
 func (s *exportServiceImpl) buildArchiveMetadata(
 	exportID string,
 	config domain.ExportConfig,
 	metricsCount int,
 	obfuscationMaps map[string]map[string]string,
+	adaptiveStats *adaptiveExportStats,
 ) archive.ArchiveMetadata {
 	metadata := archive.ArchiveMetadata{
-		ExportID:        exportID,
-		ExportDate:      time.Now().UTC(),
-		TimeRange:       config.TimeRange,
-		Components:      uniqueStrings(config.Components),
-		Jobs:            uniqueStrings(config.Jobs),
-		MetricsCount:    metricsCount,
-		Obfuscated:      config.Obfuscation.Enabled,
-		VMGatherVersion: s.vmGatherVersion,
+		ExportID:             exportID,
+		ExportDate:           time.Now().UTC(),
+		TimeRange:            config.TimeRange,
+		Components:           uniqueStrings(config.Components),
+		Jobs:                 uniqueStrings(config.Jobs),
+		MetricsCount:         metricsCount,
+		Obfuscated:           config.Obfuscation.Enabled,
+		AdaptiveMode:         string(config.Safety.Mode),
+		MetricStepSeconds:    config.MetricStepSeconds,
+		MaxMetricStepSeconds: config.Safety.MaxStepSeconds,
+		VMGatherVersion:      s.vmGatherVersion,
+	}
+	if adaptiveStats != nil {
+		metadata.AdaptiveMode = string(adaptiveStats.Mode)
+		metadata.Sampled = adaptiveStats.Sampled
+		if adaptiveStats.Sampled {
+			metadata.MetricStepSeconds = adaptiveStats.MaxStepSecondsUsed
+		} else {
+			metadata.MetricStepSeconds = 0
+		}
+		metadata.AdaptiveDecisions = append([]archive.AdaptiveDecision(nil), adaptiveStats.Decisions...)
 	}
 
 	// Add obfuscation maps if present
@@ -748,7 +858,7 @@ func splitTimeRange(tr domain.TimeRange, minWindowSeconds int) (domain.TimeRange
 func enrichAdaptiveError(kind vm.ErrorKind, err error, attempt exportAttempt, minWindowSeconds int) error {
 	switch kind {
 	case vm.ErrorKindQueryTimeout:
-		return fmt.Errorf("query still exceeds VictoriaMetrics -search.maxQueryDuration after splitting down to %ds windows; narrow selector/query or use raw selector export: %w", minWindowSeconds, err)
+		return fmt.Errorf("query still exceeds VictoriaMetrics -search.maxQueryDuration after splitting down to %ds windows and sampling at %ds; narrow selector/query or use raw selector export: %w", minWindowSeconds, attempt.StepSeconds, err)
 	case vm.ErrorKindTooManySeries:
 		return fmt.Errorf("query exceeds VictoriaMetrics series limits; narrow selector/query or adjust VictoriaMetrics -search.maxExportSeries / -search.maxUniqueTimeseries: %w", err)
 	default:
@@ -887,6 +997,19 @@ func (s *exportServiceImpl) fetchBatch(ctx context.Context, client *vm.Client, s
 		fmt.Printf("[WARN] Export API not available for current batch, falling back to query_range\n")
 		return s.exportViaQueryRange(ctx, client, selector, tr, metricStepSeconds)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("export failed: %w", err)
+	}
+	return reader, nil
+}
+
+func (s *exportServiceImpl) fetchAttemptReader(ctx context.Context, client *vm.Client, attempt exportAttempt) (io.ReadCloser, error) {
+	fmt.Printf("Attempting export for batch: %s -> %s\n", attempt.TimeRange.Start.Format(time.RFC3339), attempt.TimeRange.End.Format(time.RFC3339))
+	if attempt.UseQueryRange {
+		fmt.Printf("[INFO] Using query_range export for custom query at %ds step\n", attempt.StepSeconds)
+		return s.exportViaQueryRange(ctx, client, attempt.Selector, attempt.TimeRange, attempt.StepSeconds)
+	}
+	reader, err := client.Export(ctx, attempt.Selector, attempt.TimeRange.Start, attempt.TimeRange.End)
 	if err != nil {
 		return nil, fmt.Errorf("export failed: %w", err)
 	}
