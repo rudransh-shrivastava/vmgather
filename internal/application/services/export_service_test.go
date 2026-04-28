@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,26 +172,35 @@ func TestExportService_BuildExportQuery(t *testing.T) {
 
 func TestCustomSelectorWithSelectedJobsUsesExportAPIWhenSelectorCanBeRewritten(t *testing.T) {
 	exportBody := `{"metric":{"__name__":"vm_app_version","job":"a","env":"prod"},"values":[1],"timestamps":[1]}` + "\n"
+	handlerErrs := make(chan error, 4)
+	reportHandlerErr := func(format string, args ...any) {
+		handlerErrs <- fmt.Errorf(format, args...)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/export":
 			if err := r.ParseForm(); err != nil {
-				t.Fatalf("parse form failed: %v", err)
+				reportHandlerErr("parse form failed: %v", err)
+				return
 			}
 			matchers := r.Form["match[]"]
 			if len(matchers) != 1 {
-				t.Fatalf("expected one matcher, got %v", matchers)
+				reportHandlerErr("expected one matcher, got %v", matchers)
+				return
 			}
 			expected := `vm_app_version{env="prod",job=~"a|b"}`
 			if matchers[0] != expected {
-				t.Fatalf("unexpected export matcher %q, want %q", matchers[0], expected)
+				reportHandlerErr("unexpected export matcher %q, want %q", matchers[0], expected)
+				return
 			}
 			w.Header().Set("Content-Type", "application/x-json-stream")
 			_, _ = io.WriteString(w, exportBody)
 		case "/api/v1/query_range":
-			t.Fatalf("query_range must not be used for rewritable selector")
+			reportHandlerErr("query_range must not be used for rewritable selector")
+			http.Error(w, "unexpected query_range", http.StatusInternalServerError)
 		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
+			reportHandlerErr("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
@@ -214,6 +225,11 @@ func TestCustomSelectorWithSelectedJobsUsesExportAPIWhenSelectorCanBeRewritten(t
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 metric, got %d", count)
+	}
+	select {
+	case handlerErr := <-handlerErrs:
+		t.Fatal(handlerErr)
+	default:
 	}
 }
 
@@ -843,6 +859,75 @@ func TestTooManySeriesSplitsByJobAndCompletes(t *testing.T) {
 	}
 	if result.MetricsExported != 2 {
 		t.Fatalf("expected 2 metrics after job split, got %d", result.MetricsExported)
+	}
+}
+
+func TestSplitByJobFailureDoesNotAppendPartialSubSplit(t *testing.T) {
+	var mu sync.Mutex
+	requests := make([]string, 0, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/export" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		matcher := ""
+		if values := r.Form["match[]"]; len(values) > 0 {
+			matcher = values[0]
+		}
+		mu.Lock()
+		requests = append(requests, matcher)
+		mu.Unlock()
+		switch matcher {
+		case `{job=~"a|b"}`:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `the number of matching timeseries exceeds 10000000`)
+		case `{job=~"a"}`:
+			_, _ = io.WriteString(w, `{"metric":{"__name__":"vm_app_version","job":"a"},"values":[1],"timestamps":[1]}`+"\n")
+		case `{job=~"b"}`:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `bad request`)
+		default:
+			http.Error(w, fmt.Sprintf("unexpected matcher: %q", matcher), http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	outputDir := t.TempDir()
+	stagingFile := filepath.Join(outputDir, "failed-split.partial.jsonl")
+	service := NewExportService(outputDir, "test-version")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: server.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(60, 0),
+		},
+		Mode:        domain.ExportModeCluster,
+		Jobs:        []string{"a", "b"},
+		Batching:    domain.BatchSettings{Enabled: false, Strategy: "manual"},
+		StagingDir:  outputDir,
+		StagingFile: stagingFile,
+	}
+	ApplyExportDefaults(&cfg)
+
+	_, err := service.ExecuteExport(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected split failure")
+	}
+	data, readErr := os.ReadFile(stagingFile)
+	if readErr != nil {
+		t.Fatalf("failed to read staging file: %v", readErr)
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("expected failed split to leave main staging empty, got %s", string(data))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(requests, ","); got != `{job=~"a|b"},{job=~"a"},{job=~"b"}` {
+		t.Fatalf("unexpected request sequence: %v", requests)
 	}
 }
 

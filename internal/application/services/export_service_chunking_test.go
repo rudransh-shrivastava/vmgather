@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -430,6 +432,78 @@ func TestAdaptiveRetryDoesNotAppendFailedPartialAttempt(t *testing.T) {
 	}
 	if lines != 3 {
 		t.Fatalf("expected only successful split output in archive, got %d lines", lines)
+	}
+}
+
+func TestSplitByTimeFailureDoesNotAppendPartialSubSplit(t *testing.T) {
+	start := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		startSecs, _ := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
+		endSecs, _ := strconv.ParseInt(r.URL.Query().Get("end"), 10, 64)
+		rangeStart := time.Unix(startSecs, 0)
+		rangeEnd := time.Unix(endSecs, 0)
+		duration := rangeEnd.Sub(rangeStart)
+		switch {
+		case duration == 2*time.Hour:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"status":"error","error":"timeout exceeded during query execution: 30.000 seconds"}`)
+		case duration == time.Hour && rangeStart.Equal(start):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success",
+				"data": map[string]any{
+					"resultType": "matrix",
+					"result": []any{
+						map[string]any{
+							"metric": map[string]string{
+								"__name__": "vm_rows_inserted_total",
+								"job":      "vmagent",
+							},
+							"values": [][]any{{float64(rangeStart.Unix()), "1"}},
+						},
+					},
+				},
+			})
+		case duration == time.Hour && rangeStart.Equal(start.Add(time.Hour)):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `bad request`)
+		default:
+			http.Error(w, fmt.Sprintf("unexpected range %s - %s", rangeStart, rangeEnd), http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	outputDir := t.TempDir()
+	stagingFile := filepath.Join(outputDir, "failed-time-split.partial.jsonl")
+	service := NewExportService(outputDir, "test")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: srv.URL},
+		TimeRange: domain.TimeRange{
+			Start: start,
+			End:   start.Add(2 * time.Hour),
+		},
+		Mode:        domain.ExportModeCustom,
+		QueryType:   domain.QueryModeMetricsQL,
+		Query:       `rate(vm_rows_inserted_total[5m])`,
+		Batching:    domain.BatchSettings{Enabled: false, Strategy: "manual"},
+		StagingFile: stagingFile,
+	}
+	ApplyExportDefaults(&cfg)
+
+	_, err := service.ExecuteExport(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected split failure")
+	}
+	data, readErr := os.ReadFile(stagingFile)
+	if readErr != nil {
+		t.Fatalf("failed to read staging file: %v", readErr)
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("expected failed time split to leave main staging empty, got %s", string(data))
 	}
 }
 

@@ -1,6 +1,8 @@
 package services
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,5 +46,37 @@ func TestApplyExportDefaults_PreservesDropLabels(t *testing.T) {
 	}
 	if len(cfg.Obfuscation.DropLabels) != 2 {
 		t.Fatalf("expected drop labels to be preserved, got %v", cfg.Obfuscation.DropLabels)
+	}
+}
+
+func TestApplyExportDefaults_EnablesSafetyWithNegativeSplitSettings(t *testing.T) {
+	cfg := domain.ExportConfig{
+		TimeRange: domain.TimeRange{
+			Start: time.Now().Add(-time.Hour),
+			End:   time.Now(),
+		},
+		Safety: domain.ExportSafetyConfig{
+			MinWindowSeconds: -10,
+			MaxSplitDepth:    -1,
+		},
+	}
+
+	ApplyExportDefaults(&cfg)
+
+	if !cfg.Safety.AutoSplit || !cfg.Safety.SplitByJob {
+		t.Fatalf("expected invalid negative split settings to bootstrap safe defaults, got %+v", cfg.Safety)
+	}
+	if cfg.Safety.MinWindowSeconds != 5 || cfg.Safety.MaxSplitDepth != 8 {
+		t.Fatalf("expected negative split settings to be normalized, got %+v", cfg.Safety)
+	}
+}
+
+func TestExportConfigSafetyJSONIsExplicit(t *testing.T) {
+	data, err := json.Marshal(domain.ExportConfig{})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"safety"`) {
+		t.Fatalf("expected safety field to be explicit in JSON, got %s", string(data))
 	}
 }

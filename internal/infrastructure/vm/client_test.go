@@ -264,16 +264,20 @@ func TestClient_Export_Success(t *testing.T) {
 			t.Errorf("unexpected method: %s", r.Method)
 		}
 		if err := r.ParseForm(); err != nil {
-			t.Fatalf("failed to parse form: %v", err)
+			t.Errorf("failed to parse form: %v", err)
+			return
 		}
 		if got := r.Form.Get("reduce_mem_usage"); got != "1" {
-			t.Fatalf("expected reduce_mem_usage=1, got %q", got)
+			t.Errorf("expected reduce_mem_usage=1, got %q", got)
+			return
 		}
 		if got := r.Form.Get("max_rows_per_line"); got != "10000" {
-			t.Fatalf("expected max_rows_per_line=10000, got %q", got)
+			t.Errorf("expected max_rows_per_line=10000, got %q", got)
+			return
 		}
 		if got := r.Form["match[]"]; len(got) != 1 || got[0] != "{__name__!=\"\"}" {
-			t.Fatalf("unexpected match selector: %v", got)
+			t.Errorf("unexpected match selector: %v", got)
+			return
 		}
 
 		// Return mock data

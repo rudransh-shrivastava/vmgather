@@ -22,7 +22,9 @@ All notable changes to vmgather are documented here. The format follows [Keep a 
 - `query_range` failures caused by VictoriaMetrics execution timeout no longer fail the whole export immediately; vmgather now retries by splitting the current time window down to a configured minimum.
 - If minimum-window `query_range` retries still hit VictoriaMetrics execution timeout, autopilot now retries with the next sampling step up to 5 minutes before returning the final error.
 - `/api/v1/export` failures caused by excessive matched series no longer fail immediately when multiple jobs are selected; vmgather now retries sequentially per job.
+- Split-by-job and split-by-time retries now keep successful sub-attempt output in a temporary group file until the whole split succeeds, preventing duplicate metrics after a later sub-attempt fails.
 - Context deadline errors are now classified as query timeouts in the adaptive exporter path, so timeout-driven retries keep working under request deadlines.
+- Export safety defaults now also recover from invalid negative split settings, and the JSON contract no longer marks the non-pointer `safety` field as `omitempty`.
 
 ## [v1.9.1] - 2026-02-23
 

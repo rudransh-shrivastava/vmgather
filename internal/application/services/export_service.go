@@ -337,20 +337,16 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 		}
 		ReportAdaptiveRetry(ctx, progress)
 		recordAdaptiveDecision(stats, progress)
-		total := 0
+		children := make([]exportAttempt, 0, len(attempt.Jobs))
 		for _, job := range attempt.Jobs {
 			child, ok := s.buildJobSplitAttempt(config, attempt, job)
 			if !ok {
 				return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
 			}
 			child.Depth = attempt.Depth + 1
-			count, childErr := s.exportWindowAdaptive(ctx, client, config, child, mainStagingFile, obfuscator, retryCount, stats)
-			if childErr != nil {
-				return 0, childErr
-			}
-			total += count
+			children = append(children, child)
 		}
-		return total, nil
+		return s.runSplitAttemptsAtomically(ctx, client, config, children, mainStagingFile, obfuscator, retryCount, stats)
 	case kind == vm.ErrorKindQueryTimeout && attempt.UseQueryRange:
 		if config.Safety.AutoSplit && attempt.Depth < config.Safety.MaxSplitDepth {
 			left, right, ok := splitTimeRange(attempt.TimeRange, config.Safety.MinWindowSeconds)
@@ -374,15 +370,7 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 				rightAttempt.Depth = attempt.Depth + 1
 				rightAttempt.Strategy = "query_range"
 
-				leftCount, leftErr := s.exportWindowAdaptive(ctx, client, config, leftAttempt, mainStagingFile, obfuscator, retryCount, stats)
-				if leftErr != nil {
-					return 0, leftErr
-				}
-				rightCount, rightErr := s.exportWindowAdaptive(ctx, client, config, rightAttempt, mainStagingFile, obfuscator, retryCount, stats)
-				if rightErr != nil {
-					return 0, rightErr
-				}
-				return leftCount + rightCount, nil
+				return s.runSplitAttemptsAtomically(ctx, client, config, []exportAttempt{leftAttempt, rightAttempt}, mainStagingFile, obfuscator, retryCount, stats)
 			}
 		}
 		if nextStep, ok := nextAutopilotStep(attempt.StepSeconds, config.Safety); ok {
@@ -406,6 +394,40 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 	}
 
 	return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
+}
+
+func (s *exportServiceImpl) runSplitAttemptsAtomically(
+	ctx context.Context,
+	client *vm.Client,
+	config domain.ExportConfig,
+	children []exportAttempt,
+	mainStagingFile string,
+	obfuscator *obfuscation.Obfuscator,
+	retryCount *int,
+	stats *adaptiveExportStats,
+) (int, error) {
+	splitFile := fmt.Sprintf("%s.split.%d", mainStagingFile, time.Now().UnixNano())
+	if err := initializeStagingFile(splitFile, false); err != nil {
+		return 0, fmt.Errorf("failed to initialize split staging file: %w", err)
+	}
+
+	total := 0
+	for _, child := range children {
+		count, err := s.exportWindowAdaptive(ctx, client, config, child, splitFile, obfuscator, retryCount, stats)
+		if err != nil {
+			_ = os.Remove(splitFile)
+			return 0, err
+		}
+		total += count
+	}
+	if err := appendFile(mainStagingFile, splitFile); err != nil {
+		_ = os.Remove(splitFile)
+		return 0, err
+	}
+	if err := os.Remove(splitFile); err != nil {
+		log.Printf("[WARN] Failed to remove split staging file %s: %v", splitFile, err)
+	}
+	return total, nil
 }
 
 func (s *exportServiceImpl) fetchAndProcessAttempt(

@@ -136,7 +136,7 @@ type ExportConfig struct {
 	Query             string             `json:"query,omitempty"`
 	Obfuscation       ObfuscationConfig  `json:"obfuscation"`
 	Batching          BatchSettings      `json:"batching"`
-	Safety            ExportSafetyConfig `json:"safety,omitempty"`
+	Safety            ExportSafetyConfig `json:"safety"`
 	StagingDir        string             `json:"staging_dir,omitempty"`
 	StagingFile       string             `json:"staging_file,omitempty"`
 	ResumeFromBatch   int                `json:"resume_from_batch,omitempty"`
