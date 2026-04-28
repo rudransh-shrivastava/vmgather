@@ -34,6 +34,15 @@ const (
 	QueryModeMetricsQL QueryMode = "metricsql"
 )
 
+// ExportAdaptivityMode controls how aggressively vmgather changes export plans after VM rejects heavy reads.
+type ExportAdaptivityMode string
+
+const (
+	ExportAdaptivityOff       ExportAdaptivityMode = "off"
+	ExportAdaptivitySafe      ExportAdaptivityMode = "safe"
+	ExportAdaptivityAutopilot ExportAdaptivityMode = "autopilot"
+)
+
 // AuthConfig contains authentication settings
 type AuthConfig struct {
 	Type        AuthType `json:"type"`
@@ -79,6 +88,18 @@ type BatchSettings struct {
 	CustomIntervalSecs int    `json:"custom_interval_seconds,omitempty"`
 }
 
+// ExportSafetyConfig controls adaptive retries when VictoriaMetrics rejects heavy reads.
+type ExportSafetyConfig struct {
+	Mode              ExportAdaptivityMode `json:"mode,omitempty"`
+	AutoSplit         bool                 `json:"auto_split"`
+	SplitByJob        bool                 `json:"split_by_job"`
+	SplitByMetricName bool                 `json:"split_by_metric_name,omitempty"`
+	MinWindowSeconds  int                  `json:"min_window_seconds,omitempty"`
+	MaxSplitDepth     int                  `json:"max_split_depth,omitempty"`
+	MaxStepSeconds    int                  `json:"max_step_seconds,omitempty"`
+	StepLadderSeconds []int                `json:"step_ladder_seconds,omitempty"`
+}
+
 // MetricSample represents a sample metric for preview
 type MetricSample struct {
 	MetricName string            `json:"metric_name"`
@@ -106,20 +127,21 @@ type OutputSettings struct {
 
 // ExportConfig contains full export configuration
 type ExportConfig struct {
-	Connection        VMConnection      `json:"connection"`
-	TimeRange         TimeRange         `json:"time_range"`
-	Components        []string          `json:"components"`
-	Jobs              []string          `json:"jobs"`
-	Mode              ExportMode        `json:"mode,omitempty"`
-	QueryType         QueryMode         `json:"query_type,omitempty"`
-	Query             string            `json:"query,omitempty"`
-	Obfuscation       ObfuscationConfig `json:"obfuscation"`
-	Batching          BatchSettings     `json:"batching"`
-	StagingDir        string            `json:"staging_dir,omitempty"`
-	StagingFile       string            `json:"staging_file,omitempty"`
-	ResumeFromBatch   int               `json:"resume_from_batch,omitempty"`
-	MetricStepSeconds int               `json:"metric_step_seconds,omitempty"`
-	OutputSettings    OutputSettings    `json:"output_settings"`
+	Connection        VMConnection       `json:"connection"`
+	TimeRange         TimeRange          `json:"time_range"`
+	Components        []string           `json:"components"`
+	Jobs              []string           `json:"jobs"`
+	Mode              ExportMode         `json:"mode,omitempty"`
+	QueryType         QueryMode          `json:"query_type,omitempty"`
+	Query             string             `json:"query,omitempty"`
+	Obfuscation       ObfuscationConfig  `json:"obfuscation"`
+	Batching          BatchSettings      `json:"batching"`
+	Safety            ExportSafetyConfig `json:"safety"`
+	StagingDir        string             `json:"staging_dir,omitempty"`
+	StagingFile       string             `json:"staging_file,omitempty"`
+	ResumeFromBatch   int                `json:"resume_from_batch,omitempty"`
+	MetricStepSeconds int                `json:"metric_step_seconds,omitempty"`
+	OutputSettings    OutputSettings     `json:"output_settings"`
 }
 
 // ExportResult represents the result of an export operation

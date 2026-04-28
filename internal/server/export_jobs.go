@@ -42,6 +42,10 @@ type ExportJobStatus struct {
 	ETA                      *time.Time           `json:"eta,omitempty"`
 	StagingPath              string               `json:"staging_path,omitempty"`
 	ObfuscationEnabled       bool                 `json:"obfuscation_enabled"`
+	AdaptiveRetries          int                  `json:"adaptive_retries"`
+	LastErrorKind            string               `json:"last_error_kind,omitempty"`
+	CurrentStrategy          string               `json:"current_strategy,omitempty"`
+	CurrentStepSeconds       int                  `json:"current_step_seconds,omitempty"`
 	Result                   *domain.ExportResult `json:"result,omitempty"`
 	Error                    string               `json:"error,omitempty"`
 	CurrentRange             *domain.TimeRange    `json:"current_range,omitempty"`
@@ -171,6 +175,10 @@ func (m *ExportJobManager) ResumeJob(ctx context.Context, jobID string) (*Export
 	job.status.Result = nil
 	job.status.CompletedAt = nil
 	job.status.ETA = nil
+	job.status.AdaptiveRetries = 0
+	job.status.LastErrorKind = ""
+	job.status.CurrentStrategy = ""
+	job.status.CurrentStepSeconds = 0
 
 	m.activeJobs++
 
@@ -308,6 +316,24 @@ func (m *ExportJobManager) updateBatch(jobID string, progress services.BatchProg
 	}
 }
 
+func (m *ExportJobManager) updateAdaptiveRetry(jobID string, progress services.AdaptiveRetryProgress) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, exists := m.jobs[jobID]
+	if !exists {
+		return
+	}
+
+	job.status.AdaptiveRetries = progress.Retries
+	job.status.LastErrorKind = progress.ErrorKind
+	job.status.CurrentStrategy = progress.Strategy
+	job.status.CurrentStepSeconds = progress.StepSeconds
+	job.status.CurrentRange = &domain.TimeRange{
+		Start: progress.TimeRange.Start,
+		End:   progress.TimeRange.End,
+	}
+}
+
 func (m *ExportJobManager) jobFinishedLocked() {
 	if m.activeJobs > 0 {
 		m.activeJobs--
@@ -372,4 +398,8 @@ type jobProgressReporter struct {
 
 func (r *jobProgressReporter) OnBatchComplete(progress services.BatchProgress) {
 	r.manager.updateBatch(r.jobID, progress, r.baseBatches, r.baseMetrics)
+}
+
+func (r *jobProgressReporter) OnAdaptiveRetry(progress services.AdaptiveRetryProgress) {
+	r.manager.updateAdaptiveRetry(r.jobID, progress)
 }

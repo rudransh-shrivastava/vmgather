@@ -115,6 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initializeStagingDirInput();
     initializeMetricStepSelector();
     initializeBatchWindowSelector();
+    initializeAdaptiveExportMode();
     disableCancelButton();
     wireAdvancedSummaries();
     initializeHelpSection();
@@ -1835,6 +1836,9 @@ function applyRecommendedMetricStep(forceApply) {
 }
 
 function getSelectedMetricStepSeconds() {
+    if (isAdaptiveAutopilotEnabled()) {
+        return 0;
+    }
     const select = document.getElementById('metricStep');
     if (!select) {
         return 0;
@@ -1865,6 +1869,31 @@ function initializeBatchWindowSelector() {
         customInput.addEventListener('input', updateBatchWindowHint);
     }
     syncUI();
+}
+
+function isAdaptiveAutopilotEnabled() {
+    return document.getElementById('adaptiveExportMode')?.checked !== false;
+}
+
+function syncAdaptiveExportModeUI() {
+    const manualControls = document.getElementById('exportManualControls');
+    const state = document.getElementById('adaptiveExportModeState');
+    const enabled = isAdaptiveAutopilotEnabled();
+    if (manualControls) {
+        manualControls.classList.toggle('hidden', enabled);
+    }
+    if (state) {
+        state.textContent = enabled ? 'On' : 'Off';
+    }
+}
+
+function initializeAdaptiveExportMode() {
+    const toggle = document.getElementById('adaptiveExportMode');
+    if (!toggle) {
+        return;
+    }
+    toggle.addEventListener('change', syncAdaptiveExportModeUI);
+    syncAdaptiveExportModeUI();
 }
 
 function updateBatchWindowHint() {
@@ -1898,6 +1927,13 @@ function updateBatchWindowHint() {
 }
 
 function getBatchingConfig() {
+    if (isAdaptiveAutopilotEnabled()) {
+        return {
+            enabled: true,
+            strategy: 'auto',
+            custom_interval_seconds: 0
+        };
+    }
     const select = document.getElementById('batchWindowSelect');
     const customInput = document.getElementById('customBatchWindowInput');
     let strategy = 'auto';
@@ -1919,6 +1955,16 @@ function getBatchingConfig() {
         enabled: true,
         strategy,
         custom_interval_seconds: customInterval
+    };
+}
+
+function getSafetyConfig() {
+    const adaptive = isAdaptiveAutopilotEnabled();
+    return {
+        mode: adaptive ? 'autopilot' : 'safe',
+        auto_split: true,
+        split_by_job: true,
+        max_step_seconds: 300
     };
 }
 
@@ -3090,7 +3136,8 @@ async function exportMetrics(buttonElement) {
             obfuscation: obfuscation,
             staging_dir: stagingDirValue,
             metric_step_seconds: metricStepSeconds,
-            batching: batchingConfig
+            batching: batchingConfig,
+            safety: getSafetyConfig()
         };
         window.__lastExportStartPayload = exportPayload;
 
@@ -3260,6 +3307,7 @@ function showExportProgressPanel(meta) {
     const metrics = document.getElementById('exportProgressMetrics');
     const eta = document.getElementById('exportProgressEta');
     const windowInfo = document.getElementById('exportBatchWindow');
+    const adaptiveEl = document.getElementById('exportAdaptiveStrategy');
     const fill = document.getElementById('exportProgressFill');
 
     hideResumeExportOption();
@@ -3285,6 +3333,9 @@ function showExportProgressPanel(meta) {
     if (fill) {
         fill.style.width = '0%';
     }
+    if (adaptiveEl) {
+        adaptiveEl.textContent = '';
+    }
     if (meta.staging_path) {
         exportStagingPath = meta.staging_path;
     }
@@ -3309,6 +3360,7 @@ function updateExportProgress(status) {
     const metricsEl = document.getElementById('exportProgressMetrics');
     const etaEl = document.getElementById('exportProgressEta');
     const summaryEl = document.getElementById('exportProgressSummary');
+    const adaptiveEl = document.getElementById('exportAdaptiveStrategy');
 
     const percentage = Math.min(100, Math.round((status.progress || 0) * 100));
     if (fill) {
@@ -3335,6 +3387,23 @@ function updateExportProgress(status) {
             ? status.average_batch_seconds.toFixed(1)
             : '0.0';
         summaryEl.textContent = `Last batch ${last}s - Avg ${avg}s`;
+    }
+    if (adaptiveEl) {
+        const strategyLabels = {
+            split_by_job: 'Adaptive retry: split by job',
+            split_by_time: 'Adaptive retry: split time window',
+            increase_step: 'Adaptive retry: lower sampling precision',
+            query_range: 'Adaptive retry: switch to query_range',
+            export: 'Adaptive retry: retry export plan'
+        };
+        if (status.current_strategy && status.adaptive_retries > 0) {
+            const label = strategyLabels[status.current_strategy] || `Adaptive retry: ${status.current_strategy}`;
+            adaptiveEl.textContent = status.current_step_seconds
+                ? `${label} (${formatStepLabel(status.current_step_seconds)})`
+                : label;
+        } else {
+            adaptiveEl.textContent = '';
+        }
     }
     if (typeof status.obfuscation_enabled === 'boolean') {
         currentJobObfuscationEnabled = status.obfuscation_enabled;

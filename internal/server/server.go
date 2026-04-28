@@ -876,6 +876,8 @@ func (s *Server) handleExportStatus(w http.ResponseWriter, r *http.Request) {
 		"batch_window_seconds":        status.BatchWindowSeconds,
 		"average_batch_seconds":       status.AverageBatchSeconds,
 		"last_batch_duration_seconds": status.LastBatchDurationSeconds,
+		"adaptive_retries":            status.AdaptiveRetries,
+		"current_step_seconds":        status.CurrentStepSeconds,
 	}
 	if status.StagingPath != "" {
 		response["staging_path"] = status.StagingPath
@@ -892,6 +894,12 @@ func (s *Server) handleExportStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if status.Error != "" {
 		response["error"] = status.Error
+	}
+	if status.LastErrorKind != "" {
+		response["last_error_kind"] = status.LastErrorKind
+	}
+	if status.CurrentStrategy != "" {
+		response["current_strategy"] = status.CurrentStrategy
 	}
 	if status.Result != nil {
 		response["result"] = status.Result

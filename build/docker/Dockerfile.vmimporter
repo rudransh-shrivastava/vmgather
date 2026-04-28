@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
-ARG GO_VERSION=1.25.7
-FROM golang:${GO_VERSION}-alpine@sha256:f6751d823c26342f9506c03797d2527668d095b0a15f1862cddb4d927a7a4ced AS builder
+ARG GO_VERSION=1.25.9
+FROM golang:${GO_VERSION}-alpine@sha256:5caaf1cca9dc351e13deafbc3879fd4754801acba8653fa9540cea125d01a71f AS builder
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w" -o /out/vmimporter ./cmd/vmimporter && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags="-s -w" -o /out/container-healthcheck ./cmd/container-healthcheck
 
-FROM gcr.io/distroless/base-debian12:nonroot@sha256:107333192f6732e786f65df4df77f1d8bfb500289aad09540e43e0f7b6a2b816
+FROM gcr.io/distroless/base-debian12:nonroot@sha256:956eee19d77039968b05209dce21e43c84fb2bae7644a2b0546b36996c96e305
 WORKDIR /tmp
 COPY --from=builder /out/vmimporter /usr/local/bin/vmimporter
 COPY --from=builder /out/container-healthcheck /usr/local/bin/container-healthcheck

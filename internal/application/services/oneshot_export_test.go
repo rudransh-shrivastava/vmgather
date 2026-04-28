@@ -135,14 +135,36 @@ func TestOneshotExport_Positive_SelectorNoJobFilter(t *testing.T) {
 }
 
 func TestOneshotExport_Positive_SelectorWithJobFilter(t *testing.T) {
-	queryBody := `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"__name__":"vm_app_version","job":"test1"},"values":[[1700000000,"1"]]}]}}`
-	srv := serveExportAndQueryRange(t, http.StatusOK, "", http.StatusOK, queryBody)
+	exportBody := `{"metric":{"__name__":"vm_app_version","job":"test1","env":"prod"},"values":[1],"timestamps":[1]}` + "\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/export":
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("parse form failed: %v", err)
+				return
+			}
+			matchers := r.Form["match[]"]
+			expected := `vm_app_version{env="prod",job=~"test1"}`
+			if len(matchers) != 1 || matchers[0] != expected {
+				t.Errorf("unexpected export matcher %v, want %q", matchers, expected)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, exportBody)
+		case "/api/v1/query_range":
+			t.Errorf("query_range must not be used for rewritable selector")
+			http.Error(w, "unexpected query_range", http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
 	defer srv.Close()
 
 	cfg := baseOneshotConfig(srv.URL)
 	cfg.Mode = domain.ExportModeCustom
 	cfg.QueryType = domain.QueryModeSelector
-	cfg.Query = `{job=~"test.*"}`
+	cfg.Query = `vm_app_version{env="prod"}`
 	cfg.Jobs = []string{"test1"}
 	out, count, err := runExportToWriter(t, cfg)
 	if err != nil {
@@ -153,6 +175,9 @@ func TestOneshotExport_Positive_SelectorWithJobFilter(t *testing.T) {
 	}
 	if !strings.Contains(out, "\"job\":\"test1\"") {
 		t.Fatalf("expected selector output: %s", out)
+	}
+	if !strings.Contains(out, "\"env\":\"prod\"") {
+		t.Fatalf("expected selector output to satisfy env matcher: %s", out)
 	}
 }
 
@@ -211,16 +236,30 @@ func TestOneshotExport_Negative_SelectorExportFails(t *testing.T) {
 }
 
 func TestOneshotExport_Negative_SelectorJobFilterQueryRangeFails(t *testing.T) {
-	srv := serveExportAndQueryRange(t, http.StatusOK, "", http.StatusBadRequest, "bad request")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/export":
+			t.Errorf("export API must not be used for selector query requiring query_range")
+			http.Error(w, "unexpected export api usage", http.StatusInternalServerError)
+			return
+		case "/api/v1/query_range":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, "bad request")
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+	}))
 	defer srv.Close()
 
 	cfg := baseOneshotConfig(srv.URL)
 	cfg.Mode = domain.ExportModeCustom
 	cfg.QueryType = domain.QueryModeSelector
-	cfg.Query = `{job=~"test.*"}`
+	cfg.Query = `sum(rate({job=~"test.*"}[5m]))`
 	cfg.Jobs = []string{"test1"}
 	_, _, err := runExportToWriter(t, cfg)
 	if err == nil {
-		t.Fatalf("expected selector query_range failure")
+		t.Fatalf("expected selector query failure")
 	}
 }

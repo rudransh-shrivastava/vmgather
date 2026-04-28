@@ -669,8 +669,11 @@ func TestEnsureBatchDefaultsSetsMetricStep(t *testing.T) {
 	if cfg.MetricStepSeconds == 0 {
 		t.Fatal("expected metric step to be set automatically")
 	}
-	if cfg.MetricStepSeconds != services.RecommendedMetricStepSeconds(tr) {
-		t.Fatalf("metric step mismatch: got %d want %d", cfg.MetricStepSeconds, services.RecommendedMetricStepSeconds(tr))
+	if cfg.MetricStepSeconds != services.MinBatchIntervalSeconds {
+		t.Fatalf("metric step mismatch: got %d want %d", cfg.MetricStepSeconds, services.MinBatchIntervalSeconds)
+	}
+	if cfg.Safety.Mode != domain.ExportAdaptivityAutopilot {
+		t.Fatalf("expected autopilot safety mode, got %q", cfg.Safety.Mode)
 	}
 }
 

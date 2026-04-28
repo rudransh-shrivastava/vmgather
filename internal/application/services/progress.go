@@ -20,9 +20,19 @@ type BatchProgress struct {
 	Duration     time.Duration
 }
 
+// AdaptiveRetryProgress describes an adaptive retry or split decision for the current batch.
+type AdaptiveRetryProgress struct {
+	Retries     int
+	TimeRange   domain.TimeRange
+	ErrorKind   string
+	Strategy    string
+	StepSeconds int
+}
+
 // ProgressReporter receives progress events for long-running exports.
 type ProgressReporter interface {
 	OnBatchComplete(BatchProgress)
+	OnAdaptiveRetry(AdaptiveRetryProgress)
 }
 
 // WithProgressReporter attaches a reporter to the context so that ExecuteExport can publish progress.
@@ -41,5 +51,12 @@ func getProgressReporter(ctx context.Context) ProgressReporter {
 func ReportBatchProgress(ctx context.Context, progress BatchProgress) {
 	if reporter := getProgressReporter(ctx); reporter != nil {
 		reporter.OnBatchComplete(progress)
+	}
+}
+
+// ReportAdaptiveRetry delivers adaptive retry updates to the reporter stored in the context.
+func ReportAdaptiveRetry(ctx context.Context, progress AdaptiveRetryProgress) {
+	if reporter := getProgressReporter(ctx); reporter != nil {
+		reporter.OnAdaptiveRetry(progress)
 	}
 }
