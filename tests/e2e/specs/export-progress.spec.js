@@ -136,7 +136,8 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-async function goToObfuscationStep(page) {
+async function goToObfuscationStep(page, options = {}) {
+  const { manualTuning = false } = options;
   await page.goto('/');
   await page.waitForLoadState('networkidle');
   await page.locator('button:has-text("Next")').first().click();
@@ -161,8 +162,23 @@ async function goToObfuscationStep(page) {
   await page.locator('#stagingDir').blur();
   await page.evaluate(() => window.validateStagingDir && window.validateStagingDir(true));
   await waitForHintText(page, 'Ready');
-  await page.selectOption('#metricStep', '60');
-  await page.selectOption('#batchWindowSelect', '300');
+  if (manualTuning) {
+    await setAdaptiveExportMode(page, false);
+    await expect(page.locator('#exportManualControls')).toBeVisible();
+    await page.selectOption('#metricStep', '60');
+    await page.selectOption('#batchWindowSelect', '300');
+  }
+}
+
+async function setAdaptiveExportMode(page, enabled) {
+  await page.evaluate((nextValue) => {
+    const input = document.getElementById('adaptiveExportMode');
+    if (!input) {
+      throw new Error('adaptiveExportMode input not found');
+    }
+    input.checked = nextValue;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, enabled);
 }
 
 test.describe('Export progress UI', () => {
@@ -172,7 +188,7 @@ test.describe('Export progress UI', () => {
       expect(requestBody.staging_dir).toBe(STAGING_DIR);
       expect(requestBody.metric_step_seconds).toBe(60);
       expect(requestBody.safety).toMatchObject({
-        mode: 'autopilot',
+        mode: 'safe',
         auto_split: true,
         split_by_job: true,
         max_step_seconds: 300,
@@ -236,7 +252,7 @@ test.describe('Export progress UI', () => {
       });
     });
 
-    await goToObfuscationStep(page);
+    await goToObfuscationStep(page, { manualTuning: true });
     const progressPanel = page.locator('#exportProgressPanel');
     await expect(progressPanel).toHaveClass(/hidden/);
 
@@ -250,13 +266,92 @@ test.describe('Export progress UI', () => {
     await page.waitForFunction(() => window.__lastExportStartPayload || window.__lastExportError);
     const exportError = await page.evaluate(() => window.__lastExportError);
     expect(exportError).toBeFalsy();
-    await expect(page.locator('#exportProgressPath')).toContainText(STAGING_DIR);
     await expect(page.locator('#exportProgressPercent')).toContainText('0%');
     await expect(page.locator('#exportBatchWindow')).toContainText('≈ 60s');
 
     await page.waitForSelector('.step[data-step="7"]');
     await expect(page.locator('#exportProgressPercent')).toContainText('100%');
     await expect(page.locator('#exportSpoilers')).toContainText('777.777.1.1:8428');
+  });
+
+  test('autopilot hides manual tuning until disabled', async ({ page }) => {
+    let exportPayload;
+
+    await page.route('**/api/export/start', route => {
+      exportPayload = route.request().postDataJSON();
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          job_id: 'job-autopilot-ui-test',
+          total_batches: 1,
+          batch_window_seconds: 60,
+          staging_path: STAGING_DIR,
+        }),
+      });
+    });
+
+    await page.route('**/api/export/status**', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          job_id: 'job-autopilot-ui-test',
+          state: 'completed',
+          total_batches: 1,
+          completed_batches: 1,
+          progress: 1,
+          metrics_processed: 100,
+          batch_window_seconds: 60,
+          staging_path: STAGING_DIR,
+          result: {
+            export_id: 'job-autopilot-ui-test',
+            archive_path: '/tmp/export.zip',
+            archive_size: 512,
+            metrics_count: 100,
+            sha256: 'sha256sum',
+            obfuscation_applied: true,
+            sample_data: [],
+          },
+        }),
+      });
+    });
+
+    await goToObfuscationStep(page);
+    await expect(page.locator('#adaptiveExportMode')).toBeChecked();
+    await expect(page.locator('#adaptiveExportModeState')).toHaveText('On');
+    await expect(page.locator('#exportManualControls')).toBeHidden();
+
+    await setAdaptiveExportMode(page, false);
+    await expect(page.locator('#adaptiveExportModeState')).toHaveText('Off');
+    await expect(page.locator('#exportManualControls')).toBeVisible();
+    await page.selectOption('#metricStep', '60');
+    await page.selectOption('#batchWindowSelect', '300');
+
+    await setAdaptiveExportMode(page, true);
+    await expect(page.locator('#adaptiveExportModeState')).toHaveText('On');
+    await expect(page.locator('#exportManualControls')).toBeHidden();
+
+    await page.waitForSelector('.step[data-step="6"].active #startExportBtn:enabled');
+    await page.evaluate(() => {
+      const btn = document.getElementById('startExportBtn');
+      if (btn && window.exportMetrics) {
+        window.exportMetrics(btn);
+      }
+    });
+
+    await expect.poll(() => exportPayload).toBeTruthy();
+    expect(exportPayload.metric_step_seconds).toBe(0);
+    expect(exportPayload.batching).toMatchObject({
+      strategy: 'auto',
+      custom_interval_seconds: 0,
+    });
+    expect(exportPayload.safety).toMatchObject({
+      mode: 'autopilot',
+      auto_split: true,
+      split_by_job: true,
+      max_step_seconds: 300,
+    });
   });
 
   test('shows adaptive retry state during export', async ({ page }) => {

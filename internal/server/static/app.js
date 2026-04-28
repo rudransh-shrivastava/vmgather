@@ -115,6 +115,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initializeStagingDirInput();
     initializeMetricStepSelector();
     initializeBatchWindowSelector();
+    initializeAdaptiveExportMode();
     disableCancelButton();
     wireAdvancedSummaries();
     initializeHelpSection();
@@ -1835,6 +1836,9 @@ function applyRecommendedMetricStep(forceApply) {
 }
 
 function getSelectedMetricStepSeconds() {
+    if (isAdaptiveAutopilotEnabled()) {
+        return 0;
+    }
     const select = document.getElementById('metricStep');
     if (!select) {
         return 0;
@@ -1865,6 +1869,31 @@ function initializeBatchWindowSelector() {
         customInput.addEventListener('input', updateBatchWindowHint);
     }
     syncUI();
+}
+
+function isAdaptiveAutopilotEnabled() {
+    return document.getElementById('adaptiveExportMode')?.checked !== false;
+}
+
+function syncAdaptiveExportModeUI() {
+    const manualControls = document.getElementById('exportManualControls');
+    const state = document.getElementById('adaptiveExportModeState');
+    const enabled = isAdaptiveAutopilotEnabled();
+    if (manualControls) {
+        manualControls.classList.toggle('hidden', enabled);
+    }
+    if (state) {
+        state.textContent = enabled ? 'On' : 'Off';
+    }
+}
+
+function initializeAdaptiveExportMode() {
+    const toggle = document.getElementById('adaptiveExportMode');
+    if (!toggle) {
+        return;
+    }
+    toggle.addEventListener('change', syncAdaptiveExportModeUI);
+    syncAdaptiveExportModeUI();
 }
 
 function updateBatchWindowHint() {
@@ -1898,6 +1927,13 @@ function updateBatchWindowHint() {
 }
 
 function getBatchingConfig() {
+    if (isAdaptiveAutopilotEnabled()) {
+        return {
+            enabled: true,
+            strategy: 'auto',
+            custom_interval_seconds: 0
+        };
+    }
     const select = document.getElementById('batchWindowSelect');
     const customInput = document.getElementById('customBatchWindowInput');
     let strategy = 'auto';
@@ -1923,7 +1959,7 @@ function getBatchingConfig() {
 }
 
 function getSafetyConfig() {
-    const adaptive = document.getElementById('adaptiveExportMode')?.checked !== false;
+    const adaptive = isAdaptiveAutopilotEnabled();
     return {
         mode: adaptive ? 'autopilot' : 'safe',
         auto_split: true,

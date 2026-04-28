@@ -525,6 +525,74 @@
             opacity: 1;
         }
 
+        .autopilot-panel {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            padding: 18px 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(37, 99, 235, 0.18);
+            border-radius: 14px;
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(255, 255, 255, 0.96));
+        }
+
+        .autopilot-copy {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .autopilot-eyebrow {
+            display: inline-flex;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--primary);
+        }
+
+        .autopilot-title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+
+        .autopilot-description {
+            margin-top: 4px;
+            font-size: 14px;
+            color: var(--text-muted);
+            max-width: 620px;
+        }
+
+        .autopilot-switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+
+        .autopilot-switch .mode-slider {
+            background-color: #cbd5e1;
+        }
+
+        .autopilot-switch .mode-switch input:checked + .mode-slider {
+            background-color: var(--primary);
+        }
+
+        .autopilot-state {
+            min-width: 40px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .manual-export-controls {
+            margin-bottom: 8px;
+        }
+
         .selector-job-item {
             padding: 10px 12px;
             border: 1px solid var(--border);
@@ -1036,6 +1104,16 @@
                 padding: 20px;
             }
 
+            .autopilot-panel {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .autopilot-switch {
+                width: 100%;
+                justify-content: space-between;
+            }
+
             header h1 {
                 font-size: 20px;
             }
@@ -1452,39 +1530,50 @@
                             so partial files survive interruptions.</span>
                     </div>
 
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="metricStep">Metric sampling step</label>
-                            <select id="metricStep">
-                                <option value="auto">Auto (based on time range)</option>
-                                <option value="30">30 seconds</option>
-                                <option value="60">1 minute</option>
-                                <option value="300">5 minutes</option>
-                            </select>
-                            <span class="input-hint" id="metricStepHint">Recommended step: 1 min</span>
+                    <div class="autopilot-panel">
+                        <div class="autopilot-copy">
+                            <div class="autopilot-eyebrow">Export mode</div>
+                            <div class="autopilot-title">Adaptive export autopilot</div>
+                            <div class="autopilot-description">
+                                Starts at full precision and only relaxes sampling up to 5 minutes when VictoriaMetrics rejects a heavy request.
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label for="batchWindowSelect">Batch window (Auto)</label>
-                            <select id="batchWindowSelect">
-                                <option value="auto" selected>Auto (recommended)</option>
-                                <option value="300">5 minutes</option>
-                                <option value="900">15 minutes</option>
-                                <option value="3600">1 hour</option>
-                                <option value="custom">Custom...</option>
-                            </select>
-                            <input type="number" id="customBatchWindowInput" placeholder="Seconds"
-                                min="30" step="1" style="display: none; margin-top: 8px;">
-                            <span class="input-hint" id="batchWindowHint">Max duration per batch. Auto adapts to the
-                                time range.</span>
+                        <div class="autopilot-switch">
+                            <span class="autopilot-state" id="adaptiveExportModeState">On</span>
+                            <label class="mode-switch">
+                                <input type="checkbox" id="adaptiveExportMode" checked aria-label="Toggle adaptive export autopilot">
+                                <span class="mode-slider"></span>
+                            </label>
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label>
-                            <input type="checkbox" id="adaptiveExportMode" checked
-                                style="width: auto; margin-right: 10px;">
-                            Adaptive export autopilot
-                        </label>
-                        <span class="input-hint">Starts with full precision and only lowers query_range sampling up to 5 minutes when VictoriaMetrics rejects the request.</span>
+
+                    <div id="exportManualControls" class="manual-export-controls hidden">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="metricStep">Metric sampling step</label>
+                                <select id="metricStep">
+                                    <option value="auto">Auto (based on time range)</option>
+                                    <option value="30">30 seconds</option>
+                                    <option value="60">1 minute</option>
+                                    <option value="300">5 minutes</option>
+                                </select>
+                                <span class="input-hint" id="metricStepHint">Recommended step: 1 min</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="batchWindowSelect">Batch window</label>
+                                <select id="batchWindowSelect">
+                                    <option value="auto" selected>Auto (recommended)</option>
+                                    <option value="300">5 minutes</option>
+                                    <option value="900">15 minutes</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="custom">Custom...</option>
+                                </select>
+                                <input type="number" id="customBatchWindowInput" placeholder="Seconds"
+                                    min="30" step="1" style="display: none; margin-top: 8px;">
+                                <span class="input-hint" id="batchWindowHint">Max duration per batch. Auto adapts to the
+                                    time range.</span>
+                            </div>
+                        </div>
                     </div>
 
                     <div id="exportProgressPanel" class="export-progress hidden">
