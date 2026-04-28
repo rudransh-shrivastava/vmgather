@@ -263,6 +263,18 @@ func TestClient_Export_Success(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("unexpected method: %s", r.Method)
 		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("failed to parse form: %v", err)
+		}
+		if got := r.Form.Get("reduce_mem_usage"); got != "1" {
+			t.Fatalf("expected reduce_mem_usage=1, got %q", got)
+		}
+		if got := r.Form.Get("max_rows_per_line"); got != "10000" {
+			t.Fatalf("expected max_rows_per_line=10000, got %q", got)
+		}
+		if got := r.Form["match[]"]; len(got) != 1 || got[0] != "{__name__!=\"\"}" {
+			t.Fatalf("unexpected match selector: %v", got)
+		}
 
 		// Return mock data
 		w.Header().Set("Content-Type", "application/x-json-stream")

@@ -1,12 +1,15 @@
 package services
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,4 +92,212 @@ func TestExportViaQueryRange_Chunking(t *testing.T) {
 	}
 
 	t.Logf("Requests made: %v", requests)
+}
+
+func TestQueryRangeTimeoutSplitsTimeWindow(t *testing.T) {
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		startRaw := r.URL.Query().Get("start")
+		endRaw := r.URL.Query().Get("end")
+		startSecs, _ := strconv.ParseInt(startRaw, 10, 64)
+		endSecs, _ := strconv.ParseInt(endRaw, 10, 64)
+		startUnix := time.Unix(startSecs, 0)
+		endUnix := time.Unix(endSecs, 0)
+		duration := endUnix.Sub(startUnix)
+		requests = append(requests, duration.String())
+		if duration > 15*time.Second {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"status":"error","error":"timeout exceeded during query execution: 30.000 seconds"}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "matrix",
+				"result": []any{
+					map[string]any{
+						"metric": map[string]string{
+							"__name__": "vm_rows_inserted_total",
+							"job":      "vmagent",
+						},
+						"values": [][]any{{float64(startUnix.Unix()), "1"}},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	service := NewExportService(t.TempDir(), "test")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: srv.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(60, 0),
+		},
+		Mode:      domain.ExportModeCustom,
+		QueryType: domain.QueryModeMetricsQL,
+		Query:     `rate(vm_rows_inserted_total[5m])`,
+		Batching:  domain.BatchSettings{Enabled: false, Strategy: "manual"},
+	}
+	ApplyExportDefaults(&cfg)
+
+	result, err := service.ExecuteExport(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ExecuteExport failed: %v", err)
+	}
+	if result.MetricsExported == 0 {
+		t.Fatalf("expected exported metrics, got %+v", result)
+	}
+	if len(requests) < 3 {
+		t.Fatalf("expected split query_range requests, got %v", requests)
+	}
+}
+
+func TestQueryRangeTimeoutStopsAtMinWindow(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, `{"status":"error","error":"timeout exceeded during query execution: 30.000 seconds"}`)
+	}))
+	defer srv.Close()
+
+	service := NewExportService(t.TempDir(), "test")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: srv.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(60, 0),
+		},
+		Mode:      domain.ExportModeCustom,
+		QueryType: domain.QueryModeMetricsQL,
+		Query:     `rate(vm_rows_inserted_total[5m])`,
+		Batching:  domain.BatchSettings{Enabled: false, Strategy: "manual"},
+		Safety: domain.ExportSafetyConfig{
+			AutoSplit:        true,
+			SplitByJob:       true,
+			MinWindowSeconds: 5,
+			MaxSplitDepth:    8,
+		},
+	}
+	ApplyExportDefaults(&cfg)
+
+	_, err := service.ExecuteExport(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected timeout failure")
+	}
+	if !strings.Contains(err.Error(), "-search.maxQueryDuration") {
+		t.Fatalf("expected actionable timeout error, got %v", err)
+	}
+	if requests == 0 || requests > 64 {
+		t.Fatalf("expected bounded retry count, got %d", requests)
+	}
+}
+
+func TestAdaptiveRetryDoesNotAppendFailedPartialAttempt(t *testing.T) {
+	start := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+	var largeAttemptFailed bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		startSecs, _ := strconv.ParseInt(r.URL.Query().Get("start"), 10, 64)
+		endSecs, _ := strconv.ParseInt(r.URL.Query().Get("end"), 10, 64)
+		rangeStart := time.Unix(startSecs, 0)
+		rangeEnd := time.Unix(endSecs, 0)
+		duration := rangeEnd.Sub(rangeStart)
+		if duration == time.Hour && !largeAttemptFailed && rangeStart.Equal(start) {
+			largeAttemptFailed = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success",
+				"data": map[string]any{
+					"resultType": "matrix",
+					"result": []any{
+						map[string]any{
+							"metric": map[string]string{
+								"__name__": "vm_rows_inserted_total",
+								"job":      "vmagent",
+							},
+							"values": [][]any{{float64(rangeStart.Unix()), "1"}},
+						},
+					},
+				},
+			})
+			return
+		}
+		if duration >= 2*time.Hour || (duration == time.Hour && rangeStart.Equal(start.Add(time.Hour))) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"status":"error","error":"timeout exceeded during query execution: 30.000 seconds"}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "matrix",
+				"result": []any{
+					map[string]any{
+						"metric": map[string]string{
+							"__name__": "vm_rows_inserted_total",
+							"job":      "vmagent",
+						},
+						"values": [][]any{{float64(rangeStart.Unix()), "1"}},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	outputDir := t.TempDir()
+	service := NewExportService(outputDir, "test")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: srv.URL},
+		TimeRange: domain.TimeRange{
+			Start: start,
+			End:   start.Add(2 * time.Hour),
+		},
+		Mode:      domain.ExportModeCustom,
+		QueryType: domain.QueryModeMetricsQL,
+		Query:     `rate(vm_rows_inserted_total[5m])`,
+		Batching:  domain.BatchSettings{Enabled: false, Strategy: "manual"},
+	}
+	ApplyExportDefaults(&cfg)
+
+	result, err := service.ExecuteExport(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ExecuteExport failed: %v", err)
+	}
+
+	archiveReader, err := zip.OpenReader(result.ArchivePath)
+	if err != nil {
+		t.Fatalf("failed to open archive: %v", err)
+	}
+	defer func() { _ = archiveReader.Close() }()
+
+	lines := 0
+	for _, file := range archiveReader.File {
+		if file.Name != "metrics.jsonl" {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatalf("failed to open metrics.jsonl: %v", err)
+		}
+		data, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatalf("failed to read metrics.jsonl: %v", err)
+		}
+		lines = len(strings.Split(strings.TrimSpace(string(data)), "\n"))
+	}
+	if lines != 3 {
+		t.Fatalf("expected only successful split output in archive, got %d lines", lines)
+	}
 }

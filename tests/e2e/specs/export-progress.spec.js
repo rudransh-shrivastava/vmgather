@@ -171,6 +171,10 @@ test.describe('Export progress UI', () => {
       const requestBody = route.request().postDataJSON();
       expect(requestBody.staging_dir).toBe(STAGING_DIR);
       expect(requestBody.metric_step_seconds).toBe(60);
+      expect(requestBody.safety).toMatchObject({
+        auto_split: true,
+        split_by_job: true,
+      });
       expect(requestBody.batching).toMatchObject({
         strategy: 'custom',
         custom_interval_seconds: 300,
@@ -251,6 +255,84 @@ test.describe('Export progress UI', () => {
     await page.waitForSelector('.step[data-step="7"]');
     await expect(page.locator('#exportProgressPercent')).toContainText('100%');
     await expect(page.locator('#exportSpoilers')).toContainText('777.777.1.1:8428');
+  });
+
+  test('shows adaptive retry state during export', async ({ page }) => {
+    await page.route('**/api/export/start', route => {
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          job_id: 'job-adaptive-test',
+          total_batches: 2,
+          batch_window_seconds: 60,
+          staging_path: STAGING_DIR,
+        }),
+      });
+    });
+
+    let pollCount = 0;
+    await page.route('**/api/export/status**', route => {
+      pollCount += 1;
+      const done = pollCount > 1;
+      const body = done
+        ? {
+          job_id: 'job-adaptive-test',
+          state: 'completed',
+          total_batches: 2,
+          completed_batches: 2,
+          progress: 1,
+          metrics_processed: 2000,
+          batch_window_seconds: 60,
+          average_batch_seconds: 18,
+          last_batch_duration_seconds: 16,
+          staging_path: STAGING_DIR,
+          adaptive_retries: 1,
+          current_strategy: 'split_by_job',
+          last_error_kind: 'too_many_series',
+          result: {
+            export_id: 'job-adaptive-test',
+            archive_path: '/tmp/export-adaptive.zip',
+            archive_size: 1024,
+            metrics_count: 2000,
+            sha256: 'sha256sum',
+            obfuscation_applied: true,
+            sample_data: [],
+          },
+        }
+        : {
+          job_id: 'job-adaptive-test',
+          state: 'running',
+          total_batches: 2,
+          completed_batches: 0,
+          progress: 0.1,
+          metrics_processed: 0,
+          batch_window_seconds: 60,
+          average_batch_seconds: 0,
+          last_batch_duration_seconds: 0,
+          staging_path: STAGING_DIR,
+          adaptive_retries: 1,
+          current_strategy: 'split_by_job',
+          last_error_kind: 'too_many_series',
+        };
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    });
+
+    await goToObfuscationStep(page);
+    await page.waitForSelector('.step[data-step="6"].active #startExportBtn:enabled');
+    await page.evaluate(() => {
+      const btn = document.getElementById('startExportBtn');
+      if (btn && window.exportMetrics) {
+        window.exportMetrics(btn);
+      }
+    });
+
+    await expect(page.locator('#exportAdaptiveStrategy')).toContainText('Adaptive retry: split by job');
+    await page.waitForSelector('.step[data-step="7"]');
   });
 });
 

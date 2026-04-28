@@ -3090,7 +3090,11 @@ async function exportMetrics(buttonElement) {
             obfuscation: obfuscation,
             staging_dir: stagingDirValue,
             metric_step_seconds: metricStepSeconds,
-            batching: batchingConfig
+            batching: batchingConfig,
+            safety: {
+                auto_split: true,
+                split_by_job: true
+            }
         };
         window.__lastExportStartPayload = exportPayload;
 
@@ -3260,6 +3264,7 @@ function showExportProgressPanel(meta) {
     const metrics = document.getElementById('exportProgressMetrics');
     const eta = document.getElementById('exportProgressEta');
     const windowInfo = document.getElementById('exportBatchWindow');
+    const adaptiveEl = document.getElementById('exportAdaptiveStrategy');
     const fill = document.getElementById('exportProgressFill');
 
     hideResumeExportOption();
@@ -3285,6 +3290,9 @@ function showExportProgressPanel(meta) {
     if (fill) {
         fill.style.width = '0%';
     }
+    if (adaptiveEl) {
+        adaptiveEl.textContent = '';
+    }
     if (meta.staging_path) {
         exportStagingPath = meta.staging_path;
     }
@@ -3309,6 +3317,7 @@ function updateExportProgress(status) {
     const metricsEl = document.getElementById('exportProgressMetrics');
     const etaEl = document.getElementById('exportProgressEta');
     const summaryEl = document.getElementById('exportProgressSummary');
+    const adaptiveEl = document.getElementById('exportAdaptiveStrategy');
 
     const percentage = Math.min(100, Math.round((status.progress || 0) * 100));
     if (fill) {
@@ -3335,6 +3344,20 @@ function updateExportProgress(status) {
             ? status.average_batch_seconds.toFixed(1)
             : '0.0';
         summaryEl.textContent = `Last batch ${last}s - Avg ${avg}s`;
+    }
+    if (adaptiveEl) {
+        const strategyLabels = {
+            split_by_job: 'Adaptive retry: split by job',
+            split_by_time: 'Adaptive retry: split time window',
+            query_range: 'Adaptive retry: switch to query_range',
+            export: 'Adaptive retry: retry export plan'
+        };
+        if (status.current_strategy && status.adaptive_retries > 0) {
+            const label = strategyLabels[status.current_strategy] || `Adaptive retry: ${status.current_strategy}`;
+            adaptiveEl.textContent = label;
+        } else {
+            adaptiveEl.textContent = '';
+        }
     }
     if (typeof status.obfuscation_enabled === 'boolean') {
         currentJobObfuscationEnabled = status.obfuscation_enabled;

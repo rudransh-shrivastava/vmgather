@@ -12,11 +12,15 @@ import (
 
 type fakeExportService struct {
 	batches []services.BatchProgress
+	retries []services.AdaptiveRetryProgress
 	result  *domain.ExportResult
 	err     error
 }
 
 func (f *fakeExportService) ExecuteExport(ctx context.Context, config domain.ExportConfig) (*domain.ExportResult, error) {
+	for _, retry := range f.retries {
+		services.ReportAdaptiveRetry(ctx, retry)
+	}
 	for _, batch := range f.batches {
 		services.ReportBatchProgress(ctx, batch)
 		time.Sleep(5 * time.Millisecond)
@@ -97,6 +101,64 @@ func TestExportJobManagerTracksProgress(t *testing.T) {
 	}
 	if final.Progress < 0.99 {
 		t.Fatalf("progress not updated, got %.2f", final.Progress)
+	}
+}
+
+func TestExportJobStatusTracksAdaptiveRetryFields(t *testing.T) {
+	now := time.Now()
+	cfg := domain.ExportConfig{
+		TimeRange: domain.TimeRange{
+			Start: now.Add(-10 * time.Minute),
+			End:   now,
+		},
+		Batching:    domain.BatchSettings{Enabled: true},
+		StagingFile: "/tmp/job-adaptive.partial",
+	}
+
+	manager := NewExportJobManager(&fakeExportService{
+		retries: []services.AdaptiveRetryProgress{
+			{
+				Retries:   1,
+				TimeRange: cfg.TimeRange,
+				ErrorKind: "too_many_series",
+				Strategy:  "split_by_job",
+			},
+		},
+		batches: []services.BatchProgress{
+			{BatchIndex: 1, TotalBatches: 1, Metrics: 10, Duration: time.Second, TimeRange: cfg.TimeRange},
+		},
+		result: &domain.ExportResult{ExportID: "job-adaptive", MetricsExported: 10},
+	})
+
+	status, err := manager.StartJob(context.Background(), "job-adaptive", cfg)
+	if err != nil {
+		t.Fatalf("failed to start job: %v", err)
+	}
+	if status.State != JobPending {
+		t.Fatalf("expected pending job, got %s", status.State)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for adaptive retry status")
+		default:
+			s, ok := manager.GetStatus(status.ID)
+			if ok && s.State == JobCompleted {
+				if s.AdaptiveRetries != 1 {
+					t.Fatalf("expected adaptive retries=1, got %d", s.AdaptiveRetries)
+				}
+				if s.LastErrorKind != "too_many_series" {
+					t.Fatalf("expected too_many_series, got %s", s.LastErrorKind)
+				}
+				if s.CurrentStrategy != "split_by_job" {
+					t.Fatalf("expected split_by_job strategy, got %s", s.CurrentStrategy)
+				}
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 

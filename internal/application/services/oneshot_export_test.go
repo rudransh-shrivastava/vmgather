@@ -135,14 +135,14 @@ func TestOneshotExport_Positive_SelectorNoJobFilter(t *testing.T) {
 }
 
 func TestOneshotExport_Positive_SelectorWithJobFilter(t *testing.T) {
-	queryBody := `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"__name__":"vm_app_version","job":"test1"},"values":[[1700000000,"1"]]}]}}`
-	srv := serveExportAndQueryRange(t, http.StatusOK, "", http.StatusOK, queryBody)
+	exportBody := `{"metric":{"__name__":"vm_app_version","job":"test1"},"values":[1],"timestamps":[1]}` + "\n"
+	srv := serveExportAndQueryRange(t, http.StatusOK, exportBody, http.StatusOK, "")
 	defer srv.Close()
 
 	cfg := baseOneshotConfig(srv.URL)
 	cfg.Mode = domain.ExportModeCustom
 	cfg.QueryType = domain.QueryModeSelector
-	cfg.Query = `{job=~"test.*"}`
+	cfg.Query = `vm_app_version{env="prod"}`
 	cfg.Jobs = []string{"test1"}
 	out, count, err := runExportToWriter(t, cfg)
 	if err != nil {
@@ -211,16 +211,16 @@ func TestOneshotExport_Negative_SelectorExportFails(t *testing.T) {
 }
 
 func TestOneshotExport_Negative_SelectorJobFilterQueryRangeFails(t *testing.T) {
-	srv := serveExportAndQueryRange(t, http.StatusOK, "", http.StatusBadRequest, "bad request")
+	srv := serveExportAndQueryRange(t, http.StatusBadRequest, "bad request", http.StatusBadRequest, "bad request")
 	defer srv.Close()
 
 	cfg := baseOneshotConfig(srv.URL)
 	cfg.Mode = domain.ExportModeCustom
 	cfg.QueryType = domain.QueryModeSelector
-	cfg.Query = `{job=~"test.*"}`
+	cfg.Query = `sum(rate({job=~"test.*"}[5m]))`
 	cfg.Jobs = []string{"test1"}
 	_, _, err := runExportToWriter(t, cfg)
 	if err == nil {
-		t.Fatalf("expected selector query_range failure")
+		t.Fatalf("expected selector query failure")
 	}
 }

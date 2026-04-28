@@ -208,6 +208,8 @@ func (c *Client) Export(ctx context.Context, selector string, start, end time.Ti
 	params.Set("match[]", selector)
 	params.Set("start", start.Format(time.RFC3339))
 	params.Set("end", end.Format(time.RFC3339))
+	params.Set("reduce_mem_usage", "1")
+	params.Set("max_rows_per_line", "10000")
 
 	// Build request
 	req, err := c.buildRequest(ctx, http.MethodPost, "/api/v1/export", params)
@@ -302,12 +304,26 @@ func classifyResponseError(statusCode int, body string) error {
 	trimmed := strings.TrimSpace(body)
 	lowered := strings.ToLower(trimmed)
 	if strings.Contains(lowered, "cannot parse accountid") || strings.Contains(lowered, "missing accountid") {
-		return fmt.Errorf("%w: %s", ErrMissingTenantPath, trimmed)
+		return &APIError{
+			StatusCode: statusCode,
+			Body:       trimmed,
+			Kind:       ErrorKindMissingRoute,
+			Err:        ErrMissingTenantPath,
+		}
 	}
 	if strings.Contains(lowered, "unsupported url format") && strings.Contains(lowered, "/prometheus/api") {
-		return fmt.Errorf("%w: %s", ErrMissingTenantPath, trimmed)
+		return &APIError{
+			StatusCode: statusCode,
+			Body:       trimmed,
+			Kind:       ErrorKindMissingRoute,
+			Err:        ErrMissingTenantPath,
+		}
 	}
-	return fmt.Errorf("unexpected status code %d: %s", statusCode, trimmed)
+	return &APIError{
+		StatusCode: statusCode,
+		Body:       trimmed,
+		Kind:       classifyBody(trimmed),
+	}
 }
 
 func connectionTargetForLog(conn domain.VMConnection) string {

@@ -140,8 +140,8 @@ func TestExportService_BuildExportQuery(t *testing.T) {
 				Query:     `{__name__=~"vm_.*"}`,
 				Jobs:      []string{"vmstorage-prod", "vmselect-prod"},
 			},
-			expected:    `({__name__=~"vm_.*"}) and on(job) {job=~"vmstorage-prod|vmselect-prod"}`,
-			useQueryRng: true,
+			expected:    `{__name__=~"vm_.*",job=~"vmstorage-prod|vmselect-prod"}`,
+			useQueryRng: false,
 		},
 		{
 			name: "custom metricsql forces query_range",
@@ -165,6 +165,55 @@ func TestExportService_BuildExportQuery(t *testing.T) {
 				t.Fatalf("useQueryRange = %v, want %v", useQueryRange, tt.useQueryRng)
 			}
 		})
+	}
+}
+
+func TestCustomSelectorWithSelectedJobsUsesExportAPIWhenSelectorCanBeRewritten(t *testing.T) {
+	exportBody := `{"metric":{"__name__":"vm_app_version","job":"a","env":"prod"},"values":[1],"timestamps":[1]}` + "\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/export":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form failed: %v", err)
+			}
+			matchers := r.Form["match[]"]
+			if len(matchers) != 1 {
+				t.Fatalf("expected one matcher, got %v", matchers)
+			}
+			expected := `vm_app_version{env="prod",job=~"a|b"}`
+			if matchers[0] != expected {
+				t.Fatalf("unexpected export matcher %q, want %q", matchers[0], expected)
+			}
+			w.Header().Set("Content-Type", "application/x-json-stream")
+			_, _ = io.WriteString(w, exportBody)
+		case "/api/v1/query_range":
+			t.Fatalf("query_range must not be used for rewritable selector")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: srv.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Now().Add(-time.Minute),
+			End:   time.Now(),
+		},
+		Mode:      domain.ExportModeCustom,
+		QueryType: domain.QueryModeSelector,
+		Query:     `vm_app_version{env="prod"}`,
+		Jobs:      []string{"a", "b"},
+		Batching:  domain.BatchSettings{Enabled: false},
+	}
+
+	var buf bytes.Buffer
+	count, err := ExportToWriter(context.Background(), cfg, &buf)
+	if err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 metric, got %d", count)
 	}
 }
 
@@ -740,6 +789,60 @@ func TestExportService_ExecuteExportStreamsWithoutPrematureCancellation(t *testi
 		}
 	case <-time.After(timeout):
 		t.Fatal("server never finished writing export payload")
+	}
+}
+
+func TestTooManySeriesSplitsByJobAndCompletes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/export":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("parse form failed: %v", err)
+			}
+			matcher := ""
+			if values := r.Form["match[]"]; len(values) > 0 {
+				matcher = values[0]
+			}
+			switch matcher {
+			case `{job=~"a|b"}`:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `the number of matching timeseries exceeds 10000000`)
+			case `{job=~"a"}`:
+				_, _ = io.WriteString(w, `{"metric":{"__name__":"vm_app_version","job":"a"},"values":[1],"timestamps":[1]}`+"\n")
+			case `{job=~"b"}`:
+				_, _ = io.WriteString(w, `{"metric":{"__name__":"vm_app_version","job":"b"},"values":[1],"timestamps":[1]}`+"\n")
+			default:
+				t.Fatalf("unexpected matcher: %q", matcher)
+			}
+		case "/api/v1/query_range":
+			t.Fatalf("query_range must not be used for job split export")
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	outputDir := t.TempDir()
+	service := NewExportService(outputDir, "test-version")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: server.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(60, 0),
+		},
+		Mode:       domain.ExportModeCluster,
+		Jobs:       []string{"a", "b"},
+		Batching:   domain.BatchSettings{Enabled: false, Strategy: "manual"},
+		StagingDir: outputDir,
+	}
+	ApplyExportDefaults(&cfg)
+
+	result, err := service.ExecuteExport(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ExecuteExport failed: %v", err)
+	}
+	if result.MetricsExported != 2 {
+		t.Fatalf("expected 2 metrics after job split, got %d", result.MetricsExported)
 	}
 }
 

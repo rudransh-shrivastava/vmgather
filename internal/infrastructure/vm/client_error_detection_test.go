@@ -31,6 +31,9 @@ func TestQueryDetectsMissingTenantPath(t *testing.T) {
 	if !errors.Is(err, ErrMissingTenantPath) {
 		t.Fatalf("expected ErrMissingTenantPath, got %v", err)
 	}
+	if ErrorKindOf(err) != ErrorKindMissingRoute {
+		t.Fatalf("expected missing route kind, got %s", ErrorKindOf(err))
+	}
 }
 
 func TestQueryDetectsUnsupportedURLFormat(t *testing.T) {
@@ -52,5 +55,36 @@ func TestQueryDetectsUnsupportedURLFormat(t *testing.T) {
 	}
 	if !errors.Is(err, ErrMissingTenantPath) {
 		t.Fatalf("expected ErrMissingTenantPath, got %v", err)
+	}
+	if ErrorKindOf(err) != ErrorKindMissingRoute {
+		t.Fatalf("expected missing route kind, got %s", ErrorKindOf(err))
+	}
+}
+
+func TestClassifyResponseError_QueryTimeout(t *testing.T) {
+	err := classifyResponseError(http.StatusUnprocessableEntity, `{"status":"error","error":"timeout exceeded during query execution: 30.000 seconds"}`)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Kind != ErrorKindQueryTimeout {
+		t.Fatalf("expected query timeout kind, got %s", apiErr.Kind)
+	}
+}
+
+func TestClassifyResponseError_TooManySeries(t *testing.T) {
+	err := classifyResponseError(http.StatusBadRequest, `the number of matching timeseries exceeds 10000000`)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.Kind != ErrorKindTooManySeries {
+		t.Fatalf("expected too many series kind, got %s", apiErr.Kind)
+	}
+}
+
+func TestErrorKindOf_ContextDeadlineExceededIsQueryTimeout(t *testing.T) {
+	if got := ErrorKindOf(context.DeadlineExceeded); got != ErrorKindQueryTimeout {
+		t.Fatalf("ErrorKindOf(context deadline) = %q, want %q", got, ErrorKindQueryTimeout)
 	}
 }

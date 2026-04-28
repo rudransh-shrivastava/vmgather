@@ -2,6 +2,24 @@
 
 All notable changes to vmgather are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and versions adhere to semantic versioning.
 
+## [v1.10.0] - 2026-04-28
+
+### Added
+- Export jobs now track adaptive retry progress (`adaptive_retries`, `last_error_kind`, `current_strategy`) so the UI can show when vmgather is automatically changing strategy instead of just failing the batch.
+- Added explicit VictoriaMetrics API error classification for missing export route, query timeouts, too-many-series failures, and transient transport errors.
+- Added focused coverage for adaptive export behavior, including time-splitting retries, job-based splitting, failed partial-attempt cleanup, and progress reporting.
+
+### Changed
+- Export pipeline now writes each batch attempt into a temporary attempt file and appends it to the main staging file only after the full attempt succeeds, preventing corrupted or duplicated staging output after retries.
+- Custom selector exports with selected jobs now prefer `/api/v1/export` when the selector can be safely rewritten with a `job=~...` matcher, avoiding unnecessary `query_range` fallback.
+- Export requests now send `reduce_mem_usage=1` and `max_rows_per_line=10000` to VictoriaMetrics `/api/v1/export` for safer large-bundle collection.
+- Export progress UI now sends adaptive safety settings by default and surfaces automatic retry strategy changes during long-running exports.
+
+### Fixed
+- `query_range` failures caused by VictoriaMetrics execution timeout no longer fail the whole export immediately; vmgather now retries by splitting the current time window down to a configured minimum.
+- `/api/v1/export` failures caused by excessive matched series no longer fail immediately when multiple jobs are selected; vmgather now retries sequentially per job.
+- Context deadline errors are now classified as query timeouts in the adaptive exporter path, so timeout-driven retries keep working under request deadlines.
+
 ## [v1.9.1] - 2026-02-23
 
 ### Added
