@@ -239,12 +239,16 @@ func TestOneshotExport_Negative_SelectorJobFilterQueryRangeFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/export":
-			t.Fatalf("export API must not be used for selector query requiring query_range")
+			t.Errorf("export API must not be used for selector query requiring query_range")
+			http.Error(w, "unexpected export api usage", http.StatusInternalServerError)
+			return
 		case "/api/v1/query_range":
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = io.WriteString(w, "bad request")
 		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
 		}
 	}))
 	defer srv.Close()

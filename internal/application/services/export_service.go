@@ -312,7 +312,7 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 	kind := vm.ErrorKindOf(err)
 
 	switch {
-	case kind == vm.ErrorKindMissingRoute && !attempt.UseQueryRange && config.Safety.AutoSplit && attempt.Depth < config.Safety.MaxSplitDepth:
+	case kind == vm.ErrorKindMissingRoute && !attempt.UseQueryRange:
 		*retryCount++
 		progress := AdaptiveRetryProgress{
 			Retries:   *retryCount,

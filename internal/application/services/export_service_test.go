@@ -862,6 +862,65 @@ func TestTooManySeriesSplitsByJobAndCompletes(t *testing.T) {
 	}
 }
 
+func TestMissingRouteFallsBackToQueryRangeWhenAdaptivityOff(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v1/export":
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/v1/query_range":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "success",
+				"data": map[string]any{
+					"resultType": "matrix",
+					"result": []any{
+						map[string]any{
+							"metric": map[string]string{
+								"__name__": "vm_app_version",
+								"job":      "vmagent",
+							},
+							"values": [][]any{{float64(1700000000), "1"}},
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	outputDir := t.TempDir()
+	service := NewExportService(outputDir, "test-version")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: server.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(60, 0),
+		},
+		Mode:       domain.ExportModeCluster,
+		Jobs:       []string{"vmagent"},
+		Batching:   domain.BatchSettings{Enabled: false, Strategy: "manual"},
+		StagingDir: outputDir,
+		Safety: domain.ExportSafetyConfig{
+			Mode: domain.ExportAdaptivityOff,
+		},
+	}
+	ApplyExportDefaults(&cfg)
+
+	result, err := service.ExecuteExport(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ExecuteExport failed: %v", err)
+	}
+	if result.MetricsExported != 1 {
+		t.Fatalf("expected 1 exported metric, got %d", result.MetricsExported)
+	}
+	if got := strings.Join(requests, ","); got != "/api/v1/export,/api/v1/query_range" {
+		t.Fatalf("unexpected request sequence: %v", requests)
+	}
+}
+
 func TestSplitByJobFailureDoesNotAppendPartialSubSplit(t *testing.T) {
 	var mu sync.Mutex
 	requests := make([]string, 0, 3)
