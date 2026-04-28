@@ -28,6 +28,9 @@ type APIError struct {
 func (e *APIError) Error() string {
 	body := strings.TrimSpace(e.Body)
 	if body == "" {
+		if e.StatusCode > 0 {
+			return fmt.Sprintf("unexpected status code %d", e.StatusCode)
+		}
 		if e.Err != nil {
 			return e.Err.Error()
 		}

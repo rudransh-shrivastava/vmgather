@@ -174,6 +174,9 @@ func (m *ExportJobManager) ResumeJob(ctx context.Context, jobID string) (*Export
 	job.status.Result = nil
 	job.status.CompletedAt = nil
 	job.status.ETA = nil
+	job.status.AdaptiveRetries = 0
+	job.status.LastErrorKind = ""
+	job.status.CurrentStrategy = ""
 
 	m.activeJobs++
 

@@ -407,10 +407,13 @@ func appendFile(destination, source string) error {
 	if err != nil {
 		return fmt.Errorf("failed to append staging file: %w", err)
 	}
-	defer func() { _ = dst.Close() }()
 
 	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
 		return fmt.Errorf("failed to append attempt output: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("failed to close staging file after append: %w", err)
 	}
 	return nil
 }

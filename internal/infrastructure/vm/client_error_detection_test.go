@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,16 @@ func TestClassifyResponseError_TooManySeries(t *testing.T) {
 	}
 	if apiErr.Kind != ErrorKindTooManySeries {
 		t.Fatalf("expected too many series kind, got %s", apiErr.Kind)
+	}
+}
+
+func TestClassifyResponseError_Empty404KeepsStatusCode(t *testing.T) {
+	err := classifyResponseError(http.StatusNotFound, "")
+	if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("expected status code in error, got %q", err.Error())
+	}
+	if got := ErrorKindOf(err); got != ErrorKindMissingRoute {
+		t.Fatalf("ErrorKindOf(empty 404) = %q, want %q", got, ErrorKindMissingRoute)
 	}
 }
 

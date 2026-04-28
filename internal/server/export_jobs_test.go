@@ -325,6 +325,9 @@ func TestResumeJobUsesSameStagingAndOffset(t *testing.T) {
 	job := manager.jobs["job-resume"]
 	job.status.CompletedBatches = 2
 	job.status.MetricsProcessed = 42
+	job.status.AdaptiveRetries = 1
+	job.status.LastErrorKind = "too_many_series"
+	job.status.CurrentStrategy = "split_by_job"
 	manager.mu.Unlock()
 
 	resumed, err := manager.ResumeJob(context.Background(), "job-resume")
@@ -333,6 +336,9 @@ func TestResumeJobUsesSameStagingAndOffset(t *testing.T) {
 	}
 	if resumed.StagingPath != cfg.StagingFile {
 		t.Fatalf("staging path lost: %s", resumed.StagingPath)
+	}
+	if resumed.AdaptiveRetries != 0 || resumed.LastErrorKind != "" || resumed.CurrentStrategy != "" {
+		t.Fatalf("adaptive retry status was not reset on resume: %+v", resumed)
 	}
 
 	deadline := time.Now().Add(200 * time.Millisecond)
