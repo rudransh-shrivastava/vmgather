@@ -54,6 +54,12 @@ func HintForError(err error) string {
 	if errors.Is(err, ErrMissingTenantPath) {
 		return "vmselect requires /select/<tenant>/prometheus in the URL (example: http://host:8481/select/0/prometheus)"
 	}
+	switch ErrorKindOf(err) {
+	case ErrorKindTooManySeries:
+		return "VictoriaMetrics rejected the request while expanding matching series. Narrow the selector/query, select fewer jobs, or raise -search.maxExportSeries / -search.maxUniqueTimeseries on the target."
+	case ErrorKindQueryTimeout:
+		return "VictoriaMetrics exceeded its query execution budget. Narrow the selector/query or raise -search.maxQueryDuration on the target."
+	}
 	return ""
 }
 

@@ -297,9 +297,26 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 	retryCount *int,
 	stats *adaptiveExportStats,
 ) (int, error) {
+	log.Printf("[EXPORT][ATTEMPT] strategy=%s depth=%d use_query_range=%v step=%ds jobs=%d window=%s..%s selector=%s",
+		attempt.Strategy,
+		attempt.Depth,
+		attempt.UseQueryRange,
+		attempt.StepSeconds,
+		len(attempt.Jobs),
+		attempt.TimeRange.Start.Format(time.RFC3339),
+		attempt.TimeRange.End.Format(time.RFC3339),
+		formatSelectorForLog(attempt.Selector),
+	)
 	attemptFile := fmt.Sprintf("%s.attempt.%d", mainStagingFile, time.Now().UnixNano())
 	count, err := s.fetchAndProcessAttempt(ctx, client, config, attempt, obfuscator, attemptFile, stats)
 	if err == nil {
+		log.Printf("[EXPORT][ATTEMPT][OK] strategy=%s depth=%d metrics=%d window=%s..%s",
+			attempt.Strategy,
+			attempt.Depth,
+			count,
+			attempt.TimeRange.Start.Format(time.RFC3339),
+			attempt.TimeRange.End.Format(time.RFC3339),
+		)
 		if err := appendFile(mainStagingFile, attemptFile); err != nil {
 			_ = os.Remove(attemptFile)
 			return 0, err
@@ -310,10 +327,28 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 	_ = os.Remove(attemptFile)
 
 	kind := vm.ErrorKindOf(err)
+	log.Printf("[EXPORT][ATTEMPT][FAIL] strategy=%s depth=%d kind=%s step=%ds jobs=%d window=%s..%s selector=%s err=%v",
+		attempt.Strategy,
+		attempt.Depth,
+		kind,
+		attempt.StepSeconds,
+		len(attempt.Jobs),
+		attempt.TimeRange.Start.Format(time.RFC3339),
+		attempt.TimeRange.End.Format(time.RFC3339),
+		formatSelectorForLog(attempt.Selector),
+		err,
+	)
 
 	switch {
 	case kind == vm.ErrorKindMissingRoute && !attempt.UseQueryRange:
 		*retryCount++
+		log.Printf("[EXPORT][ADAPTIVE] decision=query_range_fallback retries=%d kind=%s window=%s..%s selector=%s",
+			*retryCount,
+			kind,
+			attempt.TimeRange.Start.Format(time.RFC3339),
+			attempt.TimeRange.End.Format(time.RFC3339),
+			formatSelectorForLog(attempt.Selector),
+		)
 		progress := AdaptiveRetryProgress{
 			Retries:   *retryCount,
 			TimeRange: attempt.TimeRange,
@@ -329,6 +364,13 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 		return s.exportWindowAdaptive(ctx, client, config, next, mainStagingFile, obfuscator, retryCount, stats)
 	case kind == vm.ErrorKindTooManySeries && config.Safety.AutoSplit && attempt.Depth < config.Safety.MaxSplitDepth && config.Safety.SplitByJob && len(attempt.Jobs) > 1:
 		*retryCount++
+		log.Printf("[EXPORT][ADAPTIVE] decision=split_by_job retries=%d kind=%s jobs=%s window=%s..%s",
+			*retryCount,
+			kind,
+			formatJobsForLog(attempt.Jobs),
+			attempt.TimeRange.Start.Format(time.RFC3339),
+			attempt.TimeRange.End.Format(time.RFC3339),
+		)
 		progress := AdaptiveRetryProgress{
 			Retries:   *retryCount,
 			TimeRange: attempt.TimeRange,
@@ -352,6 +394,17 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 			left, right, ok := splitTimeRange(attempt.TimeRange, config.Safety.MinWindowSeconds)
 			if ok {
 				*retryCount++
+				log.Printf("[EXPORT][ADAPTIVE] decision=split_by_time retries=%d kind=%s step=%ds window=%s..%s -> [%s..%s] + [%s..%s]",
+					*retryCount,
+					kind,
+					attempt.StepSeconds,
+					attempt.TimeRange.Start.Format(time.RFC3339),
+					attempt.TimeRange.End.Format(time.RFC3339),
+					left.Start.Format(time.RFC3339),
+					left.End.Format(time.RFC3339),
+					right.Start.Format(time.RFC3339),
+					right.End.Format(time.RFC3339),
+				)
 				progress := AdaptiveRetryProgress{
 					Retries:     *retryCount,
 					TimeRange:   attempt.TimeRange,
@@ -375,6 +428,14 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 		}
 		if nextStep, ok := nextAutopilotStep(attempt.StepSeconds, config.Safety); ok {
 			*retryCount++
+			log.Printf("[EXPORT][ADAPTIVE] decision=increase_step retries=%d kind=%s from_step=%ds to_step=%ds window=%s..%s",
+				*retryCount,
+				kind,
+				attempt.StepSeconds,
+				nextStep,
+				attempt.TimeRange.Start.Format(time.RFC3339),
+				attempt.TimeRange.End.Format(time.RFC3339),
+			)
 			progress := AdaptiveRetryProgress{
 				Retries:     *retryCount,
 				TimeRange:   attempt.TimeRange,
@@ -393,6 +454,7 @@ func (s *exportServiceImpl) exportWindowAdaptive(
 	default:
 	}
 
+	logAdaptiveFailure(config, attempt, kind, err)
 	return 0, enrichAdaptiveError(kind, err, attempt, config.Safety.MinWindowSeconds)
 }
 
@@ -882,12 +944,45 @@ func enrichAdaptiveError(kind vm.ErrorKind, err error, attempt exportAttempt, mi
 	case vm.ErrorKindQueryTimeout:
 		return fmt.Errorf("query still exceeds VictoriaMetrics -search.maxQueryDuration after splitting down to %ds windows and sampling at %ds; narrow selector/query or use raw selector export: %w", minWindowSeconds, attempt.StepSeconds, err)
 	case vm.ErrorKindTooManySeries:
+		if len(attempt.Jobs) <= 1 {
+			return fmt.Errorf("query exceeds VictoriaMetrics series limits and vmgather cannot split the request further by job; narrow selector/query or adjust VictoriaMetrics -search.maxExportSeries / -search.maxUniqueTimeseries: %w", err)
+		}
 		return fmt.Errorf("query exceeds VictoriaMetrics series limits; narrow selector/query or adjust VictoriaMetrics -search.maxExportSeries / -search.maxUniqueTimeseries: %w", err)
 	default:
 		if attempt.UseQueryRange {
 			return fmt.Errorf("adaptive export failed while using query_range: %w", err)
 		}
 		return err
+	}
+}
+
+func logAdaptiveFailure(config domain.ExportConfig, attempt exportAttempt, kind vm.ErrorKind, err error) {
+	switch kind {
+	case vm.ErrorKindTooManySeries:
+		log.Printf("[EXPORT][LIMIT] too_many_series unrecoverable jobs=%d split_by_job=%v split_by_metric_name=%v use_query_range=%v selector=%s err=%v",
+			len(attempt.Jobs),
+			config.Safety.SplitByJob,
+			config.Safety.SplitByMetricName,
+			attempt.UseQueryRange,
+			formatSelectorForLog(attempt.Selector),
+			err,
+		)
+	case vm.ErrorKindQueryTimeout:
+		log.Printf("[EXPORT][LIMIT] query_timeout unrecoverable min_window_seconds=%d step=%ds depth=%d selector=%s err=%v",
+			config.Safety.MinWindowSeconds,
+			attempt.StepSeconds,
+			attempt.Depth,
+			formatSelectorForLog(attempt.Selector),
+			err,
+		)
+	default:
+		log.Printf("[EXPORT][FAIL] unrecoverable kind=%s strategy=%s depth=%d selector=%s err=%v",
+			kind,
+			attempt.Strategy,
+			attempt.Depth,
+			formatSelectorForLog(attempt.Selector),
+			err,
+		)
 	}
 }
 

@@ -120,6 +120,44 @@ func formatVMError(err error) (string, string) {
 	return message, hint
 }
 
+func componentEstimateWarnings(components []domain.VMComponent) []string {
+	hasComponentUnknown := false
+	hasJobUnknown := false
+	for _, comp := range components {
+		if comp.MetricsCountEstimate < 0 {
+			hasComponentUnknown = true
+		}
+		for _, job := range comp.Jobs {
+			if comp.JobMetrics == nil {
+				hasJobUnknown = true
+				break
+			}
+			if _, ok := comp.JobMetrics[job]; !ok {
+				hasJobUnknown = true
+				break
+			}
+		}
+	}
+
+	warnings := make([]string, 0, 2)
+	if hasComponentUnknown {
+		warnings = append(warnings, "Some series estimates are unavailable. Discovery count queries may have failed or hit VictoriaMetrics search limits; export may still work.")
+	}
+	if hasJobUnknown {
+		warnings = append(warnings, "Some per-job series estimates are unavailable. Job-level count queries may have failed or timed out.")
+	}
+	return warnings
+}
+
+func selectorEstimateWarnings(jobs []domain.SelectorJob) []string {
+	for _, job := range jobs {
+		if job.MetricsCountEstimate < 0 {
+			return []string{"Some series estimates are unavailable. Selector count queries may have failed or hit VictoriaMetrics search limits; export may still work."}
+		}
+	}
+	return nil
+}
+
 // Router returns the HTTP router
 func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
@@ -434,11 +472,16 @@ func (s *Server) handleDiscoverComponents(w http.ResponseWriter, r *http.Request
 		log.Printf("[OK] Discovery complete: %d components found", len(components))
 		log.Printf("  Component types: %v", componentTypes)
 	}
+	warnings := componentEstimateWarnings(components)
+	for _, warning := range warnings {
+		log.Printf("[WARN] [DISCOVERY] %s", warning)
+	}
 
 	// Return discovered components
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"components": components,
+		"warnings":   warnings,
 	})
 }
 
@@ -541,10 +584,15 @@ func (s *Server) handleDiscoverSelectorJobs(w http.ResponseWriter, r *http.Reque
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Selector discovery failed: %s", errMsg))
 		return
 	}
+	warnings := selectorEstimateWarnings(jobs)
+	for _, warning := range warnings {
+		log.Printf("[WARN] [DISCOVERY] %s", warning)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"jobs": jobs,
+		"jobs":     jobs,
+		"warnings": warnings,
 	})
 }
 
