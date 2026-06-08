@@ -7,7 +7,7 @@ PKG_TAG ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo "latest")
 PLATFORMS ?= linux/amd64,linux/arm64,linux/arm
 
 # Go version for build
-GO_VERSION ?= 1.25.9
+GO_VERSION ?= 1.25.11
 GOVULNCHECK_VERSION ?= v1.1.4
 DOCKER_OUTPUT ?= type=docker
 DOCKER_COMPOSE := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
@@ -813,7 +813,7 @@ security-check-go:
 	@echo "================================================================================"
 	@echo "Security Check: govulncheck"
 	@echo "================================================================================"
-	@docker run --rm -v "$$PWD:/work" -w /work golang:$(GO_VERSION)-alpine@sha256:5caaf1cca9dc351e13deafbc3879fd4754801acba8653fa9540cea125d01a71f sh -ec '\
+	@docker run --rm -v "$$PWD:/work" -w /work golang:$(GO_VERSION)-alpine@sha256:c05ba4b73604069d376c4f41346b05374335b5ca0c46fb6dfede5a59f5196931 sh -ec '\
 		go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION); \
 		$$(go env GOPATH)/bin/govulncheck ./...'
 
