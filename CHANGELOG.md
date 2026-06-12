@@ -2,6 +2,16 @@
 
 All notable changes to vmgather are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and versions adhere to semantic versioning.
 
+## [v1.11.0] - 2026-06-12
+
+### Security
+- Build, runtime, and security-scan Go toolchains are upgraded to Go `1.25.11` (from `1.25.9`) to consume the latest Go standard library vulnerability fixes.
+- Docker runtime images now use a refreshed pinned distroless `base-debian12:nonroot` digest.
+- Release binaries are now built with Go `1.25.11`, matching the container and security-scan baseline (previously built with Go `1.22`).
+
+### Changed
+- GitHub Actions across CI and release workflows are now pinned to full-length commit SHAs for supply-chain hardening.
+
 ## [v1.10.0] - 2026-04-28
 
 ### Added
@@ -27,7 +37,7 @@ All notable changes to vmgather are documented here. The format follows [Keep a 
 - Export safety defaults now also recover from invalid negative split settings, and the JSON contract no longer marks the non-pointer `safety` field as `omitempty`.
 
 ### Security
-- Docker and security-scan Go toolchains are upgraded to Go `1.25.11` to consume the latest Go standard library vulnerability fixes.
+- Docker and security-scan Go toolchains are upgraded to Go `1.25.9` to consume the latest Go standard library vulnerability fixes.
 - Docker runtime images now use a refreshed pinned distroless `base-debian12:nonroot` digest with fixed OpenSSL packages.
 
 ## [v1.9.1] - 2026-02-23
