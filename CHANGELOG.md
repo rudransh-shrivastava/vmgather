@@ -6,7 +6,7 @@ All notable changes to vmgather are documented here. The format follows [Keep a 
 
 ### Security
 - Build, runtime, and security-scan Go toolchains are upgraded to Go `1.25.11` (from `1.25.9`) to consume the latest Go standard library vulnerability fixes.
-- Docker runtime images now use a refreshed pinned distroless `base-debian12:nonroot` digest.
+- Docker runtime images now use a refreshed pinned distroless `base-debian12:nonroot` digest that ships patched `libssl3 3.0.20-1~deb12u2`, clearing the `CVE-2026-45447` HIGH finding (OpenSSL `PKCS7_verify()` heap use-after-free) raised by the image scan.
 - Release binaries are now built with Go `1.25.11`, matching the container and security-scan baseline (previously built with Go `1.22`).
 
 ### Changed
