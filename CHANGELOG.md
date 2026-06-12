@@ -4,6 +4,12 @@ All notable changes to vmgather are documented here. The format follows [Keep a 
 
 ## [v1.11.0] - 2026-06-12
 
+### Added
+- Adaptive export now emits structured diagnostics for every attempt and retry decision (`[EXPORT][ATTEMPT]`, `[EXPORT][ADAPTIVE] decision=query_range_fallback|split_by_job|split_by_time|increase_step`), tagging strategy, depth, error kind, sampling step, selected jobs, time window, and selector so support can trace how autopilot reacted to a given VictoriaMetrics rejection.
+- Added `logAdaptiveFailure`, which explains why an adaptive export ultimately failed (`too_many_series` vs `query_timeout` vs other), including the unrecoverable configuration context, instead of surfacing only the raw error.
+- Per-job adaptive exports now log retry progress (`[EXPORT][JOB] adaptive-retry … retries/kind/strategy/step/range`) and the final failing context, making multi-job autopilot runs diagnosable.
+- Discovery/estimation now produces explicit warnings (`componentEstimateWarnings`, `selectorEstimateWarnings`) when per-component or per-selector series estimates are unavailable, and surfaces the failing error kind to the UI.
+
 ### Security
 - Build, runtime, and security-scan Go toolchains are upgraded to Go `1.25.11` (from `1.25.9`) to consume the latest Go standard library vulnerability fixes.
 - Docker runtime images now use a refreshed pinned distroless `base-debian12:nonroot` digest that ships patched `libssl3 3.0.20-1~deb12u2`, clearing the `CVE-2026-45447` HIGH finding (OpenSSL `PKCS7_verify()` heap use-after-free) raised by the image scan.
