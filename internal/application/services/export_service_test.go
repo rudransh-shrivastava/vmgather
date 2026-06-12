@@ -921,6 +921,40 @@ func TestMissingRouteFallsBackToQueryRangeWhenAdaptivityOff(t *testing.T) {
 	}
 }
 
+func TestTooManySeriesSingleJobReturnsNonSplittableHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/export":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `the number of matching timeseries exceeds 10000000`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := NewExportService(t.TempDir(), "test-version")
+	cfg := domain.ExportConfig{
+		Connection: domain.VMConnection{URL: server.URL},
+		TimeRange: domain.TimeRange{
+			Start: time.Unix(0, 0),
+			End:   time.Unix(60, 0),
+		},
+		Mode:     domain.ExportModeCluster,
+		Jobs:     []string{"vmstorage"},
+		Batching: domain.BatchSettings{Enabled: false, Strategy: "manual"},
+	}
+	ApplyExportDefaults(&cfg)
+
+	_, err := service.ExecuteExport(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected too many series failure")
+	}
+	if !strings.Contains(err.Error(), "cannot split the request further by job") {
+		t.Fatalf("expected non-splittable hint, got %v", err)
+	}
+}
+
 func TestSplitByJobFailureDoesNotAppendPartialSubSplit(t *testing.T) {
 	var mu sync.Mutex
 	requests := make([]string, 0, 3)

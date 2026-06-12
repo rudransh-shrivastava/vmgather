@@ -14,6 +14,8 @@ let lastValidationAttempts = [];
 let lastValidationFinalEndpoint = '';
 let discoveredComponents = [];
 let discoveredSelectorJobs = [];
+let discoveredComponentWarnings = [];
+let discoveredSelectorWarnings = [];
 let sampleMetrics = [];
 let exportResult = null;
 let currentExportJobId = null;
@@ -536,6 +538,8 @@ function resetModeState() {
     lastValidationFinalEndpoint = '';
     discoveredComponents = [];
     discoveredSelectorJobs = [];
+    discoveredComponentWarnings = [];
+    discoveredSelectorWarnings = [];
     sampleMetrics = [];
     sampleStatus = 'idle';
     sampleHadError = false;
@@ -1529,6 +1533,9 @@ async function discoverComponents() {
         }
 
         discoveredComponents = data.components || [];
+        discoveredComponentWarnings = Array.isArray(data.warnings) ? data.warnings : [];
+        discoveredSelectorWarnings = [];
+        discoveredComponentWarnings.forEach(warning => console.warn('[WARN] Discovery warning:', warning));
 
         // Log component summary
         const componentTypes = [...new Set(discoveredComponents.map(c => c.component))];
@@ -1577,6 +1584,9 @@ async function discoverSelectorJobs() {
         }
 
         discoveredSelectorJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        discoveredSelectorWarnings = Array.isArray(data.warnings) ? data.warnings : [];
+        discoveredComponentWarnings = [];
+        discoveredSelectorWarnings.forEach(warning => console.warn('[WARN] Selector discovery warning:', warning));
         renderSelectorJobs(discoveredSelectorJobs);
         setComponentsLoadingState(false);
     } catch (err) {
@@ -2801,6 +2811,17 @@ function autoSelectAllSelectorJobs() {
     updateSelectionSummary();
 }
 
+function renderSummaryWarnings(warnings) {
+    if (!Array.isArray(warnings) || warnings.length === 0) {
+        return '';
+    }
+    return `
+        <div class="warning-box" style="margin-top: 16px;">
+            <strong>Estimate warning:</strong> ${warnings.join(' ')}
+        </div>
+    `;
+}
+
 function updateSelectionSummary() {
     const summary = document.getElementById('selectionSummary');
     if (!summary) {
@@ -2852,10 +2873,15 @@ function updateSelectionSummary() {
         });
         html += '</div>';
         if (hasUnknown) {
-            html += `<div class="summary-total">Known total: ${totalKnown.toLocaleString()} series (additional data pending)</div>`;
+            if (totalKnown === 0) {
+                html += `<div class="summary-total">Series estimates unavailable for the selected jobs.</div>`;
+            } else {
+                html += `<div class="summary-total">Known total: ${totalKnown.toLocaleString()} series (additional estimates unavailable)</div>`;
+            }
         } else {
             html += `<div class="summary-total">Total: ${totalKnown.toLocaleString()} series</div>`;
         }
+        html += renderSummaryWarnings(discoveredSelectorWarnings);
         summary.innerHTML = html;
         return;
     }
@@ -2911,11 +2937,16 @@ function updateSelectionSummary() {
     html += '</div>';
 
     if (hasUnknown) {
-        html += `<div class="summary-total">Known total: ${totalKnown.toLocaleString()} series (additional data pending)</div>`;
+        if (totalKnown === 0) {
+            html += `<div class="summary-total">Series estimates unavailable for the selected components.</div>`;
+        } else {
+            html += `<div class="summary-total">Known total: ${totalKnown.toLocaleString()} series (additional estimates unavailable)</div>`;
+        }
     } else {
         html += `<div class="summary-total">Total: ${totalKnown.toLocaleString()} series</div>`;
     }
 
+    html += renderSummaryWarnings(discoveredComponentWarnings);
     summary.innerHTML = html;
 }
 

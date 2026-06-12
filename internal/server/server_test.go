@@ -379,6 +379,48 @@ func TestHandleDiscoverComponentsLogsDiscoveryRequestWhenDebugEnabled(t *testing
 	}
 }
 
+func TestHandleDiscoverComponentsReturnsEstimateWarnings(t *testing.T) {
+	server := NewServer(t.TempDir(), "test-version", false)
+	server.vmService = &mockVMService{
+		components: []domain.VMComponent{
+			{
+				Component:            "vmstorage",
+				Jobs:                 []string{"internal.vmstorage"},
+				MetricsCountEstimate: -1,
+			},
+		},
+	}
+
+	reqBody := map[string]interface{}{
+		"connection": map[string]interface{}{
+			"url":  "http://127.0.0.1:8428",
+			"auth": map[string]interface{}{"type": "none"},
+		},
+		"time_range": map[string]string{
+			"start": time.Now().Add(-time.Hour).Format(time.RFC3339),
+			"end":   time.Now().Format(time.RFC3339),
+		},
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/discover", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	warnings, ok := resp["warnings"].([]interface{})
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("expected warnings in response, got %#v", resp["warnings"])
+	}
+}
+
 func TestHandleGetSampleDoesNotLogSampleRequestByDefault(t *testing.T) {
 	server := NewServer(t.TempDir(), "test-version", false)
 	server.vmService = &mockVMService{
@@ -414,6 +456,49 @@ func TestHandleGetSampleDoesNotLogSampleRequestByDefault(t *testing.T) {
 	logs := buf.String()
 	if strings.Contains(logs, "Sample Metrics Request:") {
 		t.Fatalf("expected sample request logging to be disabled by default, but it was logged:\n%s", logs)
+	}
+}
+
+func TestHandleDiscoverSelectorJobsReturnsEstimateWarnings(t *testing.T) {
+	server := NewServer(t.TempDir(), "test-version", false)
+	server.vmService = &mockVMService{
+		selectorJobs: []domain.SelectorJob{
+			{
+				Job:                  "internal.vmstorage",
+				InstanceCount:        1,
+				MetricsCountEstimate: -1,
+			},
+		},
+	}
+
+	reqBody := map[string]interface{}{
+		"connection": map[string]interface{}{
+			"url":  "http://127.0.0.1:8428",
+			"auth": map[string]interface{}{"type": "none"},
+		},
+		"time_range": map[string]string{
+			"start": time.Now().Add(-time.Hour).Format(time.RFC3339),
+			"end":   time.Now().Format(time.RFC3339),
+		},
+		"selector": `{job="internal.vmstorage"}`,
+	}
+	body, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/discover-selector", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.Router().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	warnings, ok := resp["warnings"].([]interface{})
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("expected warnings in response, got %#v", resp["warnings"])
 	}
 }
 
@@ -802,8 +887,10 @@ func TestServer_GetSampleDataFromResult_NoSamplesMock(t *testing.T) {
 }
 
 type mockVMService struct {
-	samples   []domain.MetricSample
-	sampleErr error
+	samples      []domain.MetricSample
+	sampleErr    error
+	components   []domain.VMComponent
+	selectorJobs []domain.SelectorJob
 }
 
 func (m *mockVMService) ValidateConnection(ctx context.Context, conn domain.VMConnection) error {
@@ -811,11 +898,11 @@ func (m *mockVMService) ValidateConnection(ctx context.Context, conn domain.VMCo
 }
 
 func (m *mockVMService) DiscoverComponents(ctx context.Context, conn domain.VMConnection, tr domain.TimeRange) ([]domain.VMComponent, error) {
-	return nil, nil
+	return m.components, nil
 }
 
 func (m *mockVMService) DiscoverSelectorJobs(ctx context.Context, conn domain.VMConnection, selector string, tr domain.TimeRange) ([]domain.SelectorJob, error) {
-	return nil, nil
+	return m.selectorJobs, nil
 }
 
 func (m *mockVMService) GetSample(ctx context.Context, config domain.ExportConfig, limit int) ([]domain.MetricSample, error) {

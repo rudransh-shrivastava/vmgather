@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -224,6 +225,8 @@ func (m *ExportJobManager) markRunning(jobID string) {
 		now := time.Now()
 		job.status.State = JobRunning
 		job.status.StartedAt = &now
+		log.Printf("[EXPORT][JOB] running job_id=%s total_batches=%d staging=%s jobs=%d mode=%s query_type=%s",
+			jobID, job.status.TotalBatches, job.status.StagingPath, len(job.config.Jobs), job.config.Mode, job.config.QueryType)
 	}
 }
 
@@ -239,6 +242,9 @@ func (m *ExportJobManager) markFailed(jobID string, err error) {
 		job.status.State = JobFailed
 		job.status.CompletedAt = &now
 		job.status.Error = err.Error()
+		currentRange := job.status.CurrentRange
+		log.Printf("[EXPORT][JOB] failed job_id=%s retries=%d last_error_kind=%s strategy=%s range=%v err=%v",
+			jobID, job.status.AdaptiveRetries, job.status.LastErrorKind, job.status.CurrentStrategy, currentRange, err)
 		job.status.CurrentRange = nil
 		m.jobFinishedLocked()
 	}
@@ -259,6 +265,8 @@ func (m *ExportJobManager) markCompleted(jobID string, result *domain.ExportResu
 		job.status.Result = result
 		job.status.CurrentRange = nil
 		job.status.ETA = nil
+		log.Printf("[EXPORT][JOB] completed job_id=%s metrics=%d archive=%s retries=%d",
+			jobID, result.MetricsExported, result.ArchivePath, job.status.AdaptiveRetries)
 		m.jobFinishedLocked()
 	}
 }
@@ -332,6 +340,15 @@ func (m *ExportJobManager) updateAdaptiveRetry(jobID string, progress services.A
 		Start: progress.TimeRange.Start,
 		End:   progress.TimeRange.End,
 	}
+	log.Printf("[EXPORT][JOB] adaptive-retry job_id=%s retries=%d kind=%s strategy=%s step=%ds range=%s..%s",
+		jobID,
+		progress.Retries,
+		progress.ErrorKind,
+		progress.Strategy,
+		progress.StepSeconds,
+		progress.TimeRange.Start.Format(time.RFC3339),
+		progress.TimeRange.End.Format(time.RFC3339),
+	)
 }
 
 func (m *ExportJobManager) jobFinishedLocked() {
@@ -359,6 +376,8 @@ func (m *ExportJobManager) markCanceled(jobID string, err error) {
 		}
 		job.status.ETA = nil
 		job.status.CurrentRange = nil
+		log.Printf("[EXPORT][JOB] canceled job_id=%s completed_batches=%d metrics=%d err=%s",
+			jobID, job.status.CompletedBatches, job.status.MetricsProcessed, job.status.Error)
 		m.jobFinishedLocked()
 	}
 }

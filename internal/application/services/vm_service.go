@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -120,17 +121,27 @@ func (s *vmServiceImpl) DiscoverComponents(ctx context.Context, conn domain.VMCo
 		// Estimate metrics count for this component
 		count, err := s.estimateComponentMetrics(ctx, client, comp.Jobs, tr)
 		if err != nil {
-			// Log error but don't fail - just set -1
+			log.Printf("[WARN] [DISCOVERY][ESTIMATE] component=%s jobs=%s series estimate unavailable kind=%s err=%v",
+				comp.Component, formatJobsForLog(comp.Jobs), vm.ErrorKindOf(err), err)
 			comp.MetricsCountEstimate = -1
 		} else {
 			comp.MetricsCountEstimate = count
 		}
 
 		// Count instances
-		comp.InstanceCount, _ = s.countInstances(ctx, client, comp.Jobs, tr)
+		instanceCount, instanceErr := s.countInstances(ctx, client, comp.Jobs, tr)
+		if instanceErr != nil {
+			log.Printf("[WARN] [DISCOVERY][INSTANCES] component=%s jobs=%s instance count unavailable kind=%s err=%v",
+				comp.Component, formatJobsForLog(comp.Jobs), vm.ErrorKindOf(instanceErr), instanceErr)
+		}
+		comp.InstanceCount = instanceCount
 
 		// Estimate per-job metrics if possible
-		jobMetrics := s.estimateJobMetrics(ctx, client, comp.Jobs, tr)
+		jobMetrics, jobMetricErr := s.estimateJobMetrics(ctx, client, comp.Jobs, tr)
+		if jobMetricErr != nil {
+			log.Printf("[WARN] [DISCOVERY][JOB-ESTIMATE] component=%s jobs=%s per-job estimates unavailable kind=%s err=%v",
+				comp.Component, formatJobsForLog(comp.Jobs), vm.ErrorKindOf(jobMetricErr), jobMetricErr)
+		}
 		if len(jobMetrics) > 0 {
 			comp.JobMetrics = jobMetrics
 		}
@@ -193,6 +204,9 @@ func (s *vmServiceImpl) DiscoverSelectorJobs(ctx context.Context, conn domain.VM
 				jobCounts[job] = count
 			}
 		}
+	} else {
+		log.Printf("[WARN] [DISCOVERY][SELECTOR-ESTIMATE] selector=%s per-job series estimates unavailable kind=%s err=%v",
+			formatSelectorForLog(selector), vm.ErrorKindOf(countErr), countErr)
 	}
 
 	jobs := make([]domain.SelectorJob, 0, len(jobInstances))
@@ -280,11 +294,11 @@ func (s *vmServiceImpl) countInstances(ctx context.Context, client *vm.Client, j
 }
 
 // estimateJobMetrics returns per-job series counts if available
-func (s *vmServiceImpl) estimateJobMetrics(ctx context.Context, client *vm.Client, jobs []string, tr domain.TimeRange) map[string]int {
+func (s *vmServiceImpl) estimateJobMetrics(ctx context.Context, client *vm.Client, jobs []string, tr domain.TimeRange) (map[string]int, error) {
 	jobCounts := make(map[string]int)
 
 	if len(jobs) == 0 {
-		return jobCounts
+		return jobCounts, nil
 	}
 
 	selector := buildJobFilterSelector(jobs)
@@ -292,7 +306,10 @@ func (s *vmServiceImpl) estimateJobMetrics(ctx context.Context, client *vm.Clien
 
 	result, err := client.Query(ctx, query, effectiveQueryTime(tr.End))
 	if err != nil || len(result.Data.Result) == 0 {
-		return jobCounts
+		if err != nil {
+			return jobCounts, err
+		}
+		return jobCounts, nil
 	}
 
 	for _, series := range result.Data.Result {
@@ -306,7 +323,7 @@ func (s *vmServiceImpl) estimateJobMetrics(ctx context.Context, client *vm.Clien
 		}
 	}
 
-	return jobCounts
+	return jobCounts, nil
 }
 
 // parseCountValue extracts an integer series count from Prometheus API values
@@ -490,6 +507,24 @@ func buildJobFilterSelector(jobs []string) string {
 		escaped = append(escaped, regexp.QuoteMeta(job))
 	}
 	return fmt.Sprintf(`{job=~"%s"}`, strings.Join(escaped, "|"))
+}
+
+func formatJobsForLog(jobs []string) string {
+	if len(jobs) == 0 {
+		return "-"
+	}
+	if len(jobs) <= 4 {
+		return strings.Join(jobs, ",")
+	}
+	return fmt.Sprintf("%s (+%d more)", strings.Join(jobs[:4], ","), len(jobs)-4)
+}
+
+func formatSelectorForLog(selector string) string {
+	trimmed := strings.Join(strings.Fields(strings.TrimSpace(selector)), " ")
+	if len(trimmed) <= 160 {
+		return trimmed
+	}
+	return trimmed[:157] + "..."
 }
 
 // CheckExportAPI checks if /api/v1/export endpoint is available
